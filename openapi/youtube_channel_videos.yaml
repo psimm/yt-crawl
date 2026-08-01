@@ -1,0 +1,342 @@
+openapi: 3.0.0
+info:
+  title: YouTube Channel Videos API
+  description: |
+    Retrieve a list of videos from a YouTube channel with pagination support.
+
+    **Cross-linking**: The channel ID returned by this API can be used with the YouTube Channel API to fetch detailed channel information. Video IDs can be used with the YouTube Video Details API to get comprehensive video information.
+  version: 1.0.0
+servers:
+  - url: https://www.searchapi.io/api/v1
+paths:
+  /search:
+    get:
+      summary: YouTube Channel Videos Search
+      security:
+        - ApiKeyAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - name: engine
+          in: query
+          required: true
+          description: Search engine to use
+          schema:
+            type: string
+            enum: ["youtube_channel_videos"]
+        - name: channel_id
+          in: query
+          required: true
+          description: The YouTube channel ID or handle (e.g., "@MrBeast" or "UCX6OQ3DkcsbYNE6H8uQQuVA")
+          schema:
+            type: string
+        - name: gl
+          in: query
+          required: false
+          description: Country code for localized results (ISO 3166-1 alpha-2)
+          schema:
+            type: string
+            enum: ["DZ", "AR", "AU", "AT", "AZ", "BH", "BD", "BY", "BE", "BO", "BA", "BR", "BG", "KH", "CA", "CL", "CO", "CR", "HR", "CY", "CZ", "DK", "DO", "EC", "EG", "SV", "EE", "FI", "FR", "GE", "DE", "GH", "GR", "GT", "HN", "HK", "HU", "IS", "IN", "ID", "IQ", "IE", "IL", "IT", "JM", "JP", "JO", "KZ", "KE", "KW", "LA", "LV", "LB", "LY", "LI", "LT", "LU", "MY", "MT", "MX", "ME", "MA", "NP", "NL", "NZ", "NI", "NG", "MK", "NO", "OM", "PK", "PA", "PG", "PY", "PE", "PH", "PL", "PT", "PR", "QA", "RO", "RU", "SA", "SN", "RS", "SG", "SK", "SI", "ZA", "KR", "ES", "LK", "SE", "CH", "TW", "TZ", "TH", "TN", "TR", "UG", "UA", "AE", "GB", "US", "UY", "VE", "VN", "YE", "ZW"]
+            default: "US"
+        - name: hl
+          in: query
+          required: false
+          description: Language code for the interface language
+          schema:
+            type: string
+            enum: ["af", "az", "id", "ms", "bs", "ca", "cs", "da", "de", "et", "en-in", "en-gb", "en", "es", "es-419", "es-us", "eu", "fil", "fr", "fr-ca", "gl", "hr", "zu", "is", "it", "sw", "lv", "lt", "hu", "nl", "no", "uz", "pl", "pt-pt", "pt", "ro", "sq", "sk", "sl", "sr-latn", "fi", "sv", "vi", "tr", "be", "bg", "ky", "kk", "mk", "mn", "ru", "sr", "uk", "el", "hy", "iw", "ur", "ar", "fa", "ne", "mr", "hi", "as", "bn", "pa", "gu", "or", "ta", "te", "kn", "ml", "si", "th", "lo", "my", "ka", "am", "km", "zh-cn", "zh-tw", "zh-hk", "ja", "ko"]
+            default: "en"
+        - name: next_page_token
+          in: query
+          required: false
+          description: Token for pagination to retrieve the next page of results
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Validation Error. There is an issue with query parameters, such as missing required parameters or invalid values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication Error. The API key is missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate Limit Exceeded. The number of allowed requests has been exceeded. Consider upgrading your plan or waiting for the limit to reset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server Error. Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Timeout. We could not retrieve results in 90 seconds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'Use Bearer authentication. Format: "Bearer YOUR_API_KEY"'
+    ApiKeyQuery:
+      type: apiKey
+      in: query
+      name: api_key
+      description: Pass API key as query parameter
+  schemas:
+    SearchResponse:
+      type: object
+      properties:
+        search_metadata:
+          $ref: '#/components/schemas/SearchMetadata'
+        search_parameters:
+          $ref: '#/components/schemas/SearchParameters'
+        channel:
+          $ref: '#/components/schemas/Channel'
+          description: Channel information (only present in initial requests, not in paginated requests)
+        videos:
+          type: array
+          items:
+            $ref: '#/components/schemas/Video'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        error:
+          type: string
+          description: Error message if the search failed
+    SearchMetadata:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the search request
+        status:
+          type: string
+          description: Status of the search request
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the search was created
+        request_time_taken:
+          type: number
+          description: Time taken to make the request in seconds
+        parsing_time_taken:
+          type: number
+          description: Time taken to parse the results in seconds
+        total_time_taken:
+          type: number
+          description: Total time taken for the search in seconds
+        request_url:
+          type: string
+          description: YouTube URL for this search
+        html_url:
+          type: string
+          description: URL to view HTML results
+        json_url:
+          type: string
+          description: URL to view JSON results
+    SearchParameters:
+      type: object
+      properties:
+        engine:
+          type: string
+          description: The search engine used
+        channel_id:
+          type: string
+          description: The YouTube channel ID or handle
+        gl:
+          type: string
+          description: Country code used for the search
+        hl:
+          type: string
+          description: Language code used for the search
+        next_page_token:
+          type: string
+          description: Pagination token used for this request
+    Channel:
+      type: object
+      properties:
+        handle:
+          type: string
+          description: Channel handle (e.g., "@MrBeast")
+        id:
+          type: string
+          description: Unique channel identifier
+        title:
+          type: string
+          description: Channel name
+        subscribers:
+          type: integer
+          description: Number of channel subscribers
+        videos:
+          type: integer
+          description: Total number of videos on the channel
+        description:
+          type: string
+          description: Channel description
+        keywords:
+          type: string
+          description: Channel keywords
+        tags:
+          type: array
+          items:
+            type: string
+          description: Channel tags
+        available_countries:
+          type: array
+          items:
+            type: string
+          description: Countries where the channel is available
+        facebook_profile_id:
+          type: string
+          description: Associated Facebook profile ID
+        badges:
+          type: array
+          items:
+            type: string
+          description: Channel badges and certifications
+        first_link:
+          type: string
+          description: Primary external link for the channel
+        is_unlisted:
+          type: boolean
+          description: Whether the channel is unlisted
+        is_verified:
+          type: boolean
+          description: Whether the channel is verified
+        is_family_safe:
+          type: boolean
+          description: Whether the channel is family-safe
+        banner:
+          type: string
+          description: URL to channel banner image
+        avatar:
+          type: string
+          description: URL to channel avatar image
+    Video:
+      type: object
+      properties:
+        position:
+          type: integer
+          description: Position in the search results
+        id:
+          type: string
+          description: YouTube video ID
+        title:
+          type: string
+          description: Video title
+        link:
+          type: string
+          description: Direct link to the video
+        description:
+          type: string
+          description: Video description snippet
+        views:
+          type: integer
+          description: Number of video views
+        is_live:
+          type: boolean
+          description: Whether the video is currently live
+        channel:
+          $ref: '#/components/schemas/VideoChannel'
+        length:
+          type: string
+          description: Video duration (e.g., "12:34")
+        published_time:
+          type: string
+          description: Relative time since publication (e.g., "2 days ago")
+        badges:
+          type: array
+          items:
+            type: string
+          description: Video badges (e.g., "LIVE", "CC", "4K")
+        thumbnail:
+          $ref: '#/components/schemas/VideoThumbnail'
+        key_moments:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyMoment'
+          description: Key moments or chapters in the video
+    VideoChannel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Channel ID
+        title:
+          type: string
+          description: Channel name
+        link:
+          type: string
+          description: Link to the channel
+        is_verified:
+          type: boolean
+          description: Whether the channel is verified
+        thumbnail:
+          type: string
+          description: URL to channel thumbnail
+    VideoThumbnail:
+      type: object
+      properties:
+        static:
+          type: string
+          description: URL to static thumbnail image
+        rich:
+          type: string
+          description: URL to rich/animated thumbnail
+    KeyMoment:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Title of the key moment
+        start_seconds:
+          type: integer
+          description: Start time of the moment in seconds
+        thumbnail:
+          type: string
+          description: URL to moment thumbnail
+    Pagination:
+      type: object
+      properties:
+        filters:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaginationFilter'
+          description: Available filter options (only present in initial requests, not in paginated requests)
+        next_page_token:
+          type: string
+          description: Token to retrieve the next page of results
+    PaginationFilter:
+      type: object
+      properties:
+        text:
+          type: string
+          description: Filter display text
+        next_page_token:
+          type: string
+          description: Token to apply this filter
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Error message describing what went wrong

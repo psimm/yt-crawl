@@ -1,0 +1,774 @@
+openapi: 3.0.0
+info:
+  title: YouTube Search API
+  description: |
+    YouTube Search API provides real-time YouTube search results, including videos, channels, playlists, movies, and more.
+
+    **Cross-linking**: The video IDs returned by this API can be used with the YouTube Video Details API to fetch detailed information about specific videos. Channel IDs can be used with the YouTube Channel API and YouTube Channel Videos API to get channel-specific information.
+  version: 1.0.0
+servers:
+  - url: https://www.searchapi.io/api/v1
+paths:
+  /search:
+    get:
+      summary: YouTube Search
+      security:
+        - ApiKeyAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - name: engine
+          in: query
+          required: true
+          description: Search engine to use
+          schema:
+            type: string
+            enum: ["youtube"]
+        - name: q
+          in: query
+          required: true
+          description: Search query to search on YouTube
+          schema:
+            type: string
+        - name: sp
+          in: query
+          required: false
+          description: Filters and pagination token for YouTube search results
+          schema:
+            type: string
+        - name: gl
+          in: query
+          required: false
+          description: Country code for localized results
+          schema:
+            type: string
+            default: "US"
+            enum: ["DZ", "AR", "AU", "AT", "AZ", "BH", "BD", "BY", "BE", "BO", "BA", "BR", "BG", "KH", "CA", "CL", "CO", "CR", "HR", "CY", "CZ", "DK", "DO", "EC", "EG", "SV", "EE", "FI", "FR", "GE", "DE", "GH", "GR", "GT", "HN", "HK", "HU", "IS", "IN", "ID", "IQ", "IE", "IL", "IT", "JM", "JP", "JO", "KZ", "KE", "KW", "LA", "LV", "LB", "LY", "LI", "LT", "LU", "MY", "MT", "MX", "ME", "MA", "NP", "NL", "NZ", "NI", "NG", "MK", "NO", "OM", "PK", "PA", "PG", "PY", "PE", "PH", "PL", "PT", "PR", "QA", "RO", "RU", "SA", "SN", "RS", "SG", "SK", "SI", "ZA", "KR", "ES", "LK", "SE", "CH", "TW", "TZ", "TH", "TN", "TR", "UG", "UA", "AE", "GB", "US", "UY", "VE", "VN", "YE", "ZW"]
+        - name: hl
+          in: query
+          required: false
+          description: Interface language for search results
+          schema:
+            type: string
+            default: "en"
+            enum: ["af", "az", "id", "ms", "bs", "ca", "cs", "da", "de", "et", "en-in", "en-gb", "en", "es", "es-419", "es-us", "eu", "fil", "fr", "fr-ca", "gl", "hr", "zu", "is", "it", "sw", "lv", "lt", "hu", "nl", "no", "uz", "pl", "pt-pt", "pt", "ro", "sq", "sk", "sl", "sr-latn", "fi", "sv", "vi", "tr", "be", "bg", "ky", "kk", "mk", "mn", "ru", "sr", "uk", "el", "hy", "iw", "ur", "ar", "fa", "ne", "mr", "hi", "as", "bn", "pa", "gu", "or", "ta", "te", "kn", "ml", "si", "th", "lo", "my", "ka", "am", "km", "zh-cn", "zh-tw", "zh-hk", "ja", "ko"]
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Validation Error. There is an issue with query parameters, such as missing required parameters or invalid values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication Error. The API key is missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate Limit Exceeded. The number of allowed requests has been exceeded. Consider upgrading your plan or waiting for the limit to reset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server Error. Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Timeout. We could not retrieve results in 90 seconds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'Use Bearer authentication. Format: "Bearer YOUR_API_KEY"'
+    ApiKeyQuery:
+      type: apiKey
+      in: query
+      name: api_key
+      description: Pass API key as query parameter
+  schemas:
+    SearchResponse:
+      type: object
+      properties:
+        search_metadata:
+          $ref: '#/components/schemas/SearchMetadata'
+        search_parameters:
+          $ref: '#/components/schemas/SearchParameters'
+        search_information:
+          $ref: '#/components/schemas/SearchInformation'
+        suggestions:
+          type: array
+          description: Search query suggestions
+          items:
+            type: string
+        ads:
+          type: array
+          description: Advertisement results
+          items:
+            $ref: '#/components/schemas/Ad'
+        channels:
+          type: array
+          description: YouTube channel results
+          items:
+            $ref: '#/components/schemas/Channel'
+        movies:
+          type: array
+          description: Movie results
+          items:
+            $ref: '#/components/schemas/Movie'
+        videos:
+          type: array
+          description: Video search results
+          items:
+            $ref: '#/components/schemas/Video'
+        playlists:
+          type: array
+          description: Playlist results
+          items:
+            $ref: '#/components/schemas/Playlist'
+        sections:
+          type: array
+          description: Section results
+          items:
+            $ref: '#/components/schemas/Section'
+        shorts:
+          type: array
+          description: YouTube Shorts results
+          items:
+            $ref: '#/components/schemas/Shorts'
+        posts:
+          type: array
+          description: Community post results
+          items:
+            $ref: '#/components/schemas/Posts'
+        people_also_search_for:
+          type: array
+          description: Related search suggestions
+          items:
+            $ref: '#/components/schemas/PeopleAlsoSearchFor'
+        featured_channel:
+          $ref: '#/components/schemas/FeaturedChannel'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        error:
+          type: string
+          description: Error message if the search failed
+    SearchMetadata:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the search request
+        status:
+          type: string
+          description: Status of the search request
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the search was created
+        request_time_taken:
+          type: number
+          description: Time taken to make the request in seconds
+        parsing_time_taken:
+          type: number
+          description: Time taken to parse the results in seconds
+        total_time_taken:
+          type: number
+          description: Total time taken for the search in seconds
+        request_url:
+          type: string
+          description: YouTube URL for this search
+        html_url:
+          type: string
+          description: URL to view HTML results
+        json_url:
+          type: string
+          description: URL to view JSON results
+    SearchParameters:
+      type: object
+      properties:
+        engine:
+          type: string
+          description: Search engine used
+        q:
+          type: string
+          description: Search query that was used
+        sp:
+          type: string
+          description: Filter/pagination parameter that was used
+        hl:
+          type: string
+          description: Interface language that was used
+        gl:
+          type: string
+          description: Country code that was used
+    SearchInformation:
+      type: object
+      properties:
+        total_results:
+          type: integer
+          description: Total number of results found
+        state:
+          type: string
+          description: State of query correction if applicable
+        original_query:
+          type: string
+          description: Original query before correction
+        original_query_sp:
+          type: string
+          description: SP parameter for original query
+        corrected_query:
+          type: string
+          description: Corrected query if spelling fix was applied
+    Video:
+      type: object
+      properties:
+        position:
+          type: integer
+          description: Position in search results
+        id:
+          type: string
+          description: YouTube video ID
+        title:
+          type: string
+          description: Video title
+        link:
+          type: string
+          description: Link to the video
+        description:
+          type: string
+          description: Video description snippet
+        views:
+          type: integer
+          description: Number of views
+        is_live:
+          type: boolean
+          description: Whether the video is currently live
+        channel:
+          $ref: '#/components/schemas/VideoChannel'
+        length:
+          type: string
+          description: Video duration
+        published_time:
+          type: string
+          description: Time since publication
+        badges:
+          type: array
+          description: Video badges
+          items:
+            type: string
+        thumbnail:
+          $ref: '#/components/schemas/Thumbnail'
+        key_moments:
+          type: array
+          description: Key moments in the video
+          items:
+            $ref: '#/components/schemas/KeyMoment'
+    VideoChannel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Channel ID
+        title:
+          type: string
+          description: Channel name
+        link:
+          type: string
+          description: Link to the channel
+        is_verified:
+          type: boolean
+          description: Whether the channel is verified
+        thumbnail:
+          type: string
+          description: Channel thumbnail URL
+    Channel:
+      type: object
+      properties:
+        position:
+          type: integer
+          description: Position in search results
+        id:
+          type: string
+          description: YouTube channel ID
+        title:
+          type: string
+          description: Channel name
+        link:
+          type: string
+          description: Link to the channel
+        description:
+          type: string
+          description: Channel description
+        is_verified:
+          type: boolean
+          description: Whether the channel is verified
+        video_count:
+          type: integer
+          description: Number of videos
+        subscribers:
+          type: integer
+          description: Number of subscribers
+        thumbnail:
+          $ref: '#/components/schemas/Thumbnail'
+    Playlist:
+      type: object
+      properties:
+        position:
+          type: integer
+          description: Position in search results
+        id:
+          type: string
+          description: Playlist ID
+        title:
+          type: string
+          description: Playlist title
+        link:
+          type: string
+          description: Link to the playlist
+        video_count:
+          type: integer
+          description: Number of videos in playlist
+        channel:
+          $ref: '#/components/schemas/PlaylistChannel'
+        published_time:
+          type: string
+          description: Time since publication
+        videos:
+          type: array
+          description: Videos in the playlist
+          items:
+            $ref: '#/components/schemas/PlaylistVideo'
+        thumbnail:
+          type: string
+          description: Playlist thumbnail URL
+    PlaylistChannel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Channel ID
+        title:
+          type: string
+          description: Channel name
+        is_verified:
+          type: boolean
+          description: Whether the channel is verified
+        link:
+          type: string
+          description: Link to the channel
+    PlaylistVideo:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Video ID
+        title:
+          type: string
+          description: Video title
+        link:
+          type: string
+          description: Link to the video
+        length:
+          type: string
+          description: Video duration
+    Movie:
+      type: object
+      properties:
+        position:
+          type: integer
+          description: Position in search results
+        id:
+          type: string
+          description: Movie video ID
+        title:
+          type: string
+          description: Movie title
+        link:
+          type: string
+          description: Link to the movie
+        description:
+          type: string
+          description: Movie description
+        channel:
+          $ref: '#/components/schemas/MovieChannel'
+        length:
+          type: string
+          description: Movie duration
+        metadata_items:
+          $ref: '#/components/schemas/MetadataItems'
+        badges:
+          type: array
+          description: Movie badges
+          items:
+            type: string
+        buttons:
+          type: array
+          description: Action buttons
+          items:
+            type: string
+        thumbnail:
+          type: string
+          description: Movie thumbnail URL
+    MovieChannel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Channel ID
+        title:
+          type: string
+          description: Channel name
+        link:
+          type: string
+          description: Link to the channel
+        is_verified:
+          type: boolean
+          description: Whether the channel is verified
+    MetadataItems:
+      type: object
+      properties:
+        top:
+          type: array
+          description: Top metadata items
+          items:
+            type: string
+        bottom:
+          type: array
+          description: Bottom metadata items
+          items:
+            type: string
+    Shorts:
+      type: object
+      properties:
+        section_title:
+          type: string
+          description: Section title for shorts
+        position:
+          type: integer
+          description: Position in search results
+        items:
+          type: array
+          description: Short videos
+          items:
+            $ref: '#/components/schemas/Short'
+    Short:
+      type: object
+      properties:
+        position:
+          type: integer
+          description: Position within shorts section
+        id:
+          type: string
+          description: Short video ID
+        title:
+          type: string
+          description: Short title
+        link:
+          type: string
+          description: Link to the short
+        duration:
+          type: string
+          description: Short duration
+        views:
+          type: integer
+          description: Number of views
+        thumbnail:
+          type: string
+          description: Short thumbnail URL
+    Posts:
+      type: object
+      properties:
+        section_title:
+          type: string
+          description: Section title for posts
+        position:
+          type: integer
+          description: Position in search results
+        items:
+          type: array
+          description: Community posts
+          items:
+            $ref: '#/components/schemas/Post'
+    Post:
+      type: object
+      properties:
+        position:
+          type: integer
+          description: Position within posts section
+        id:
+          type: string
+          description: Post ID
+        link:
+          type: string
+          description: Link to the post
+        text:
+          type: string
+          description: Post text content
+        likes:
+          type: string
+          description: Number of likes text
+        extracted_likes:
+          type: integer
+          description: Number of likes as integer
+        comments:
+          type: string
+          description: Number of comments text
+        extracted_comments:
+          type: integer
+          description: Number of comments as integer
+        channel:
+          $ref: '#/components/schemas/PostChannel'
+        published_time:
+          type: string
+          description: Time since publication
+        thumbnail:
+          type: string
+          description: Post thumbnail URL
+    PostChannel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Channel ID
+        title:
+          type: string
+          description: Channel name
+        link:
+          type: string
+          description: Link to the channel
+        is_verified:
+          type: boolean
+          description: Whether the channel is verified
+        thumbnail:
+          type: string
+          description: Channel thumbnail URL
+    Section:
+      type: object
+      properties:
+        section_title:
+          type: string
+          description: Section title
+        position:
+          type: integer
+          description: Position in search results
+        items:
+          type: array
+          description: Items in the section
+          items:
+            $ref: '#/components/schemas/SectionItem'
+    SectionItem:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Item ID
+        title:
+          type: string
+          description: Item title
+        link:
+          type: string
+          description: Link to the item
+        channel:
+          $ref: '#/components/schemas/SectionChannel'
+        views:
+          type: integer
+          description: Number of views
+        published_time:
+          type: string
+          description: Time since publication
+        length:
+          type: string
+          description: Item duration
+        thumbnail:
+          type: string
+          description: Item thumbnail URL
+    SectionChannel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Channel ID
+        title:
+          type: string
+          description: Channel name
+        link:
+          type: string
+          description: Link to the channel
+    PeopleAlsoSearchFor:
+      type: object
+      properties:
+        query:
+          type: string
+          description: Suggested search query
+        link:
+          type: string
+          description: Link to perform the search
+        thumbnail:
+          type: string
+          description: Thumbnail for the suggestion
+    Ad:
+      type: object
+      properties:
+        position:
+          type: integer
+          description: Position in search results
+        id:
+          type: string
+          description: Video ID for video ads
+        title:
+          type: string
+          description: Ad title
+        link:
+          type: string
+          description: Ad link
+        description:
+          type: string
+          description: Ad description
+        website:
+          type: string
+          description: Advertiser website URL
+        channel:
+          $ref: '#/components/schemas/AdChannel'
+        length:
+          type: string
+          description: Video duration for video ads
+        thumbnail:
+          type: string
+          description: Ad thumbnail URL
+    AdChannel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Channel ID
+        title:
+          type: string
+          description: Channel name
+        link:
+          type: string
+          description: Link to the channel
+    FeaturedChannel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Featured channel ID
+        title:
+          type: string
+          description: Featured channel title
+        subtitle:
+          type: string
+          description: Featured channel subtitle
+        link:
+          type: string
+          description: Link to the featured channel
+        highlighted_video:
+          $ref: '#/components/schemas/HighlightedVideo'
+        videos:
+          type: array
+          description: Featured channel videos
+          items:
+            $ref: '#/components/schemas/FeaturedVideo'
+    HighlightedVideo:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Video ID
+        title:
+          type: string
+          description: Video title
+        subtitle:
+          type: string
+          description: Video subtitle
+        link:
+          type: string
+          description: Link to the video
+        length:
+          type: string
+          description: Video duration
+    FeaturedVideo:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Video ID
+        title:
+          type: string
+          description: Video title
+        subtitle:
+          type: string
+          description: Video subtitle
+        link:
+          type: string
+          description: Link to the video
+        length:
+          type: string
+          description: Video duration
+        channel:
+          $ref: '#/components/schemas/FeaturedVideoChannel'
+        thumbnail:
+          type: string
+          description: Video thumbnail URL
+    FeaturedVideoChannel:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Channel ID
+        title:
+          type: string
+          description: Channel name
+        link:
+          type: string
+          description: Link to the channel
+    KeyMoment:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Key moment title
+        start_seconds:
+          type: integer
+          description: Start time of the moment in seconds
+        thumbnail:
+          type: string
+          description: Key moment thumbnail URL
+    Thumbnail:
+      type: object
+      properties:
+        static:
+          type: string
+          description: Static thumbnail URL
+        rich:
+          type: string
+          description: Rich/animated thumbnail URL
+    Pagination:
+      type: object
+      properties:
+        next_page_token:
+          type: string
+          description: Token to fetch the next page of results
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Error message describing what went wrong

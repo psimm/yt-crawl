@@ -1,0 +1,237 @@
+openapi: 3.0.0
+info:
+  title: YouTube Comments API
+  description: |
+    Retrieve comments from YouTube videos with support for pagination and reply threads.
+
+    **Cross-linking**: The `video_id` parameter used in this API can be obtained from the YouTube Search API or YouTube Trends API results.
+  version: 1.0.0
+servers:
+  - url: https://www.searchapi.io/api/v1
+paths:
+  /search:
+    get:
+      summary: YouTube Comments Search
+      security:
+        - ApiKeyAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - name: engine
+          in: query
+          required: true
+          description: Search engine to use
+          schema:
+            type: string
+            enum: ["youtube_comments"]
+        - name: video_id
+          in: query
+          required: true
+          description: YouTube video ID or URL. Accepts direct video IDs, watch URLs (https://www.youtube.com/watch?v=ID), or share links (https://youtu.be/ID)
+          schema:
+            type: string
+        - name: gl
+          in: query
+          required: false
+          description: Country code (ISO 3166-1 alpha-2) for localizing results
+          schema:
+            type: string
+            enum: ["DZ", "AR", "AU", "AT", "AZ", "BH", "BD", "BY", "BE", "BO", "BA", "BR", "BG", "KH", "CA", "CL", "CO", "CR", "HR", "CY", "CZ", "DK", "DO", "EC", "EG", "SV", "EE", "FI", "FR", "GE", "DE", "GH", "GR", "GT", "HN", "HK", "HU", "IS", "IN", "ID", "IQ", "IE", "IL", "IT", "JM", "JP", "JO", "KZ", "KE", "KW", "LA", "LV", "LB", "LY", "LI", "LT", "LU", "MY", "MT", "MX", "ME", "MA", "NP", "NL", "NZ", "NI", "NG", "MK", "NO", "OM", "PK", "PA", "PG", "PY", "PE", "PH", "PL", "PT", "PR", "QA", "RO", "RU", "SA", "SN", "RS", "SG", "SK", "SI", "ZA", "KR", "ES", "LK", "SE", "CH", "TW", "TZ", "TH", "TN", "TR", "UG", "UA", "AE", "GB", "US", "UY", "VE", "VN", "YE", "ZW"]
+            default: "US"
+        - name: hl
+          in: query
+          required: false
+          description: Language code for the user interface
+          schema:
+            type: string
+            enum: ["af", "az", "id", "ms", "bs", "ca", "cs", "da", "de", "et", "en-in", "en-gb", "en", "es", "es-419", "es-us", "eu", "fil", "fr", "fr-ca", "gl", "hr", "zu", "is", "it", "sw", "lv", "lt", "hu", "nl", "no", "uz", "pl", "pt-pt", "pt", "ro", "sq", "sk", "sl", "sr-latn", "fi", "sv", "vi", "tr", "be", "bg", "ky", "kk", "mk", "mn", "ru", "sr", "uk", "el", "hy", "iw", "ur", "ar", "fa", "ne", "mr", "hi", "as", "bn", "pa", "gu", "or", "ta", "te", "kn", "ml", "si", "th", "lo", "my", "ka", "am", "km", "zh-cn", "zh-tw", "zh-hk", "ja", "ko"]
+            default: "en"
+        - name: next_page_token
+          in: query
+          required: false
+          description: Token for retrieving the next page of comments or replies
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Validation Error. There is an issue with query parameters, such as missing required parameters or invalid values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication Error. The API key is missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate Limit Exceeded. The number of allowed requests has been exceeded. Consider upgrading your plan or waiting for the limit to reset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server Error. Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Timeout. We could not retrieve results in 90 seconds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'Use Bearer authentication. Format: "Bearer YOUR_API_KEY"'
+    ApiKeyQuery:
+      type: apiKey
+      in: query
+      name: api_key
+      description: Pass API key as query parameter
+  schemas:
+    SearchResponse:
+      type: object
+      properties:
+        search_metadata:
+          $ref: '#/components/schemas/SearchMetadata'
+        search_parameters:
+          $ref: '#/components/schemas/SearchParameters'
+        search_information:
+          $ref: '#/components/schemas/SearchInformation'
+        comments:
+          type: array
+          description: Array of comment objects
+          items:
+            $ref: '#/components/schemas/Comment'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+        error:
+          type: string
+          description: Error message when comments cannot be retrieved
+    SearchMetadata:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the search request
+        status:
+          type: string
+          description: Status of the search request
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the search was created
+        request_time_taken:
+          type: number
+          description: Time taken to make the request in seconds
+        parsing_time_taken:
+          type: number
+          description: Time taken to parse the results in seconds
+        total_time_taken:
+          type: number
+          description: Total time taken for the search in seconds
+        request_url:
+          type: string
+          description: YouTube URL for this search
+        html_url:
+          type: string
+          description: URL to view HTML results
+        json_url:
+          type: string
+          description: URL to view JSON results
+    SearchParameters:
+      type: object
+      properties:
+        engine:
+          type: string
+          description: Search engine used
+        video_id:
+          type: string
+          description: YouTube video ID
+        gl:
+          type: string
+          description: Country code used for the search
+        hl:
+          type: string
+          description: Language code used for the search
+        next_page_token:
+          type: string
+          description: Token used for pagination
+    SearchInformation:
+      type: object
+      properties:
+        total_results:
+          type: integer
+          description: Total number of comments for the video
+    Comment:
+      type: object
+      required: [id, link, channel, published_date, text, likes]
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the comment
+        link:
+          type: string
+          description: Direct link to the comment on YouTube
+        channel:
+          $ref: '#/components/schemas/Channel'
+        published_date:
+          type: string
+          description: Publication date of the comment
+        text:
+          type: string
+          description: Content of the comment
+        likes:
+          type: integer
+          description: Number of likes on the comment
+        replies:
+          type: integer
+          description: Number of replies to the comment
+        replies_next_page_token:
+          type: string
+          description: Token to retrieve replies for this comment
+    Channel:
+      type: object
+      required: [id, handle, link, thumbnail]
+      properties:
+        id:
+          type: string
+          description: Channel ID
+        handle:
+          type: string
+          description: Channel handle or display name
+        link:
+          type: string
+          description: Link to the channel on YouTube
+        thumbnail:
+          type: string
+          description: URL of the channel thumbnail image
+    Pagination:
+      type: object
+      properties:
+        next_page_token:
+          type: string
+          description: Token to retrieve the next page of comments
+        replies_next_page_token:
+          type: string
+          description: Token to retrieve the next page of replies
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Error message describing what went wrong

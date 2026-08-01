@@ -1,0 +1,212 @@
+openapi: 3.0.0
+info:
+  title: YouTube Transcripts API
+  description: |
+    YouTube Transcripts API allows you to retrieve transcripts (captions) from YouTube videos in various languages. You can fetch automatic or manually created captions and get a list of available languages for any video.
+    
+    **Cross-linking**: The `video_id` parameter accepts YouTube video IDs which can be obtained from:
+    - YouTube Search API (`videos[].id` field)
+    - YouTube Video API (`video.id` field)
+    - YouTube Channel Videos API (`videos[].id` field)
+    - YouTube Comments API (same `video_id` parameter)
+  version: 1.0.0
+servers:
+  - url: https://www.searchapi.io/api/v1
+paths:
+  /search:
+    get:
+      summary: YouTube Transcripts Retrieval
+      security:
+        - ApiKeyAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - name: engine
+          in: query
+          required: true
+          description: Search engine to use
+          schema:
+            type: string
+            enum: ["youtube_transcripts"]
+        - name: video_id
+          in: query
+          required: true
+          description: YouTube video ID or URL. Accepts direct video IDs, watch URLs, or share links
+          schema:
+            type: string
+        - name: lang
+          in: query
+          required: false
+          description: Language code for the transcript
+          schema:
+            type: string
+            default: "en"
+        - name: transcript_type
+          in: query
+          required: false
+          description: Type of transcript to retrieve
+          schema:
+            type: string
+            enum: ["auto", "manual"]
+        - name: transcript_name
+          in: query
+          required: false
+          description: Exact transcript name from the available languages list
+          schema:
+            type: string
+        - name: only_available
+          in: query
+          required: false
+          description: Fall back to the first available transcript when the requested language is missing
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          description: Validation Error. There is an issue with query parameters, such as missing required parameters or invalid values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication Error. The API key is missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate Limit Exceeded. The number of allowed requests has been exceeded. Consider upgrading your plan or waiting for the limit to reset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server Error. Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Timeout. We could not retrieve results in 90 seconds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'Use Bearer authentication. Format: "Bearer YOUR_API_KEY"'
+    ApiKeyQuery:
+      type: apiKey
+      in: query
+      name: api_key
+      description: Pass API key as query parameter
+  schemas:
+    SearchResponse:
+      type: object
+      properties:
+        search_metadata:
+          $ref: '#/components/schemas/SearchMetadata'
+        search_parameters:
+          $ref: '#/components/schemas/SearchParameters'
+        transcripts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transcript'
+          description: Array of transcript segments with timing information
+        available_languages:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailableLanguage'
+          description: List of available languages for this video's transcripts
+        error:
+          type: string
+          description: Error message if transcripts could not be retrieved
+    SearchMetadata:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the search request
+        status:
+          type: string
+          description: Status of the search request
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the search was created
+        request_time_taken:
+          type: number
+          description: Time taken to make the request in seconds
+        parsing_time_taken:
+          type: number
+          description: Time taken to parse the results in seconds
+        total_time_taken:
+          type: number
+          description: Total time taken for the search in seconds
+        request_url:
+          type: string
+          description: YouTube URL for this search
+        html_url:
+          type: string
+          description: URL to view HTML results
+        json_url:
+          type: string
+          description: URL to view JSON results
+    SearchParameters:
+      type: object
+      properties:
+        engine:
+          type: string
+          description: Search engine used
+        video_id:
+          type: string
+          description: YouTube video ID
+        lang:
+          type: string
+          description: Language code for the transcript
+        transcript_type:
+          type: string
+          description: Type of transcript (auto or manual)
+        transcript_name:
+          type: string
+          description: Exact available transcript name requested
+        only_available:
+          type: boolean
+          description: Whether fallback to another available transcript was enabled
+    Transcript:
+      type: object
+      properties:
+        text:
+          type: string
+          description: The transcript text content
+        start:
+          type: number
+          description: Start time of this transcript segment in seconds
+        duration:
+          type: number
+          description: Duration of this transcript segment in seconds
+    AvailableLanguage:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Display name of the language
+        lang:
+          type: string
+          description: Language code
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Error message describing what went wrong
