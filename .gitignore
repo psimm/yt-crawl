@@ -25,3 +25,8 @@ examples/
 
 # DuckDB files and generated dashboards
 *.duckdb
+
+
+dashboard-app/node_modules/
+
+.DS_Store

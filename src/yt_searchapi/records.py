@@ -213,6 +213,8 @@ class ChannelRecord(RunRecordBase):
     discovered_via: DiscoverySource
     discovered_from_id: str | None = None
     source_request_id: str | None = None
+    subscribers: int | None = Field(default=None, ge=0)
+    views: int | None = Field(default=None, ge=0)
     raw_payload: dict[str, JsonValue] | None = None
 
 
@@ -230,6 +232,12 @@ class VideoCandidateRecord(RunRecordBase):
     discovered_from_id: str | None = None
     discovery_query: str | None = None
     source_request_id: str | None = None
+    views: int | None = Field(default=None, ge=0)
+    likes: int | None = Field(default=None, ge=0)
+    category: str | None = None
+    keywords: tuple[str, ...] = ()
+    thumbnail: str | None = None
+    is_live_content: bool | None = None
     raw_payload: dict[str, JsonValue] | None = None
 
 

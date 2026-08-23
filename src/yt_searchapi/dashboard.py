@@ -406,13 +406,44 @@ def _create_normalized_views(connection: duckdb.DuckDBPyConnection) -> None:
             recorded_at,
             json_extract_string(payload, '$.video_id') AS video_id,
             json_extract_string(payload, '$.title') AS title,
-            json_extract_string(payload, '$.url') AS url,
+            coalesce(
+                json_extract_string(payload, '$.url'),
+                json_extract_string(payload, '$.raw_payload.link')
+            ) AS url,
             json_extract_string(payload, '$.description') AS description,
             json_extract_string(payload, '$.channel_id') AS channel_id,
             json_extract_string(payload, '$.channel_title') AS channel_title,
             json_extract_string(payload, '$.published_at') AS published_at,
             try_cast(json_extract_string(payload, '$.duration_seconds') AS BIGINT)
                 AS duration_seconds,
+            coalesce(
+                try_cast(json_extract_string(payload, '$.views') AS BIGINT),
+                try_cast(json_extract_string(payload, '$.raw_payload.views') AS BIGINT)
+            ) AS views,
+            coalesce(
+                try_cast(json_extract_string(payload, '$.likes') AS BIGINT),
+                try_cast(json_extract_string(payload, '$.raw_payload.likes') AS BIGINT)
+            ) AS likes,
+            coalesce(
+                json_extract_string(payload, '$.category'),
+                json_extract_string(payload, '$.raw_payload.category')
+            ) AS category,
+            coalesce(
+                json_extract(payload, '$.keywords'),
+                json_extract(payload, '$.raw_payload.keywords')
+            ) AS keywords,
+            coalesce(
+                json_extract_string(payload, '$.thumbnail'),
+                json_extract_string(payload, '$.raw_payload.thumbnail'),
+                json_extract_string(payload, '$.raw_payload.thumbnail.static')
+            ) AS thumbnail,
+            coalesce(
+                try_cast(json_extract_string(payload, '$.is_live_content') AS BOOLEAN),
+                try_cast(
+                    json_extract_string(payload, '$.raw_payload.is_live_content')
+                    AS BOOLEAN
+                )
+            ) AS is_live_content,
             json_extract_string(payload, '$.discovered_via') AS discovered_via,
             json_extract_string(payload, '$.discovered_from_id')
                 AS discovered_from_id,

@@ -686,6 +686,12 @@ class ResearchCrawler:
                     else None
                 ),
                 source_request_id=_request_id(detail),
+                views=video.views,
+                likes=video.likes,
+                category=video.category,
+                keywords=tuple(video.keywords or ()),
+                thumbnail=video.thumbnail,
+                is_live_content=video.is_live_content,
                 raw_payload=video.model_dump(mode="json"),
             )
         )
@@ -1665,6 +1671,8 @@ class ResearchCrawler:
                     discovered_via=channel.source,
                     discovered_from_id=channel.source_ref,
                     source_request_id=request_id,
+                    subscribers=response.channel.subscribers,
+                    views=response.channel.views,
                     raw_payload=response.channel.model_dump(mode="json"),
                 )
             )

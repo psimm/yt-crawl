@@ -322,6 +322,43 @@ budget.
 The repository includes a generated example at `examples/mock-dashboard.html`
 backed by fictional, schema-validated data in `examples/mock-run/`.
 
+### Live DuckDB explorer
+
+For interactive analysis, build the React client once and run the local
+read-only query layer alongside it:
+
+```bash
+cd dashboard-app
+bun install
+bun run build
+cd ..
+uv run yt-crawl dashboard-live --run-dir runs/personal-finance-de
+```
+
+`dashboard-live` serves the built React/Tailwind application and exposes a
+small JSON API backed by an in-memory DuckDB database. The crawler's JSONL
+files remain the source of truth: the server fingerprints them, rebuilds the
+DuckDB relations when they change, and does not create a second persistent
+database. Use `--no-open` for automation, or `--port` to choose another local
+port. During dashboard development, run `bun run dev` in `dashboard-app` and
+keep the Python command running for the `/api` proxy.
+
+The analysis is intentionally transparent and DuckDB-only. It includes
+candidate and decision funnels, observed views/likes distributions, channel
+aggregates, source provenance, metadata coverage, query-plan counts, title and
+description keyword frequencies, transcript search, and monthly publication
+trends. Topic hits use manually reviewed keyword definitions in
+`src/yt_searchapi/analysis.py`; the current map covers saving/budgeting,
+investing/ETFs, retirement/pensions, debt/credit, insurance, taxes/policy,
+housing, and tools/apps. Topics overlap by design, and all video-level
+results can be filtered server-side and opened in a transcript/detail drawer.
+
+The stack is React + TypeScript + Vite + Tailwind, Recharts for the charts,
+and TanStack Table for the drill-down table. A Next.js backend would add
+deployment and routing machinery without improving this local, append-only
+workflow, so the small standard-library Python HTTP layer is the simpler
+live boundary for now.
+
 ## Offline verification
 
 ```bash

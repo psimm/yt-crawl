@@ -809,6 +809,52 @@ def dashboard_command(
             )
 
 
+@app.command("dashboard-live")
+def dashboard_live_command(
+    run_dir: Annotated[
+        Path,
+        typer.Option(
+            "--run-dir",
+            exists=True,
+            file_okay=False,
+            resolve_path=True,
+            help="Project directory containing cumulative JSONL files.",
+        ),
+    ],
+    host: Annotated[
+        str,
+        typer.Option("--host", help="Local interface to bind."),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", min=1, max=65535, help="Local HTTP port."),
+    ] = 8765,
+    web_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--web-dir",
+            help="Built dashboard assets; defaults to dashboard-app/dist.",
+        ),
+    ] = None,
+    open_browser: Annotated[
+        bool,
+        typer.Option("--open/--no-open", help="Open the live dashboard automatically."),
+    ] = True,
+) -> None:
+    """Serve the React dashboard with live DuckDB queries over the JSONL run."""
+
+    from yt_searchapi.dashboard_server import serve_dashboard
+
+    default_web_dir = Path(__file__).resolve().parents[2] / "dashboard-app" / "dist"
+    serve_dashboard(
+        run_dir,
+        web_dir=web_dir or default_web_dir,
+        host=host,
+        port=port,
+        open_browser=open_browser,
+    )
+
+
 def _prepare_research(
     *,
     writer: JsonlRunWriter,
