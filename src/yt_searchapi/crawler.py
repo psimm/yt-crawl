@@ -24,7 +24,7 @@ from yt_searchapi.classifier import (
     RelevanceDecision,
     VideoCandidate,
 )
-from yt_searchapi.client import SearchApiClient
+from yt_searchapi.client import SearchApiClient, SearchApiError
 from yt_searchapi.dates import (
     is_on_or_after_start_date,
     parse_publication_date,
@@ -135,6 +135,7 @@ class CrawlSummary:
     channels_expanded: int
     queries_executed: int
     pending_videos: int
+    transcripts_unavailable: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +244,7 @@ class ResearchCrawler:
         self._executed_queries: set[str] = set()
         self._relevant_ids: set[str] = set()
         self._transcript_ids: set[str] = set()
+        self._unavailable_transcript_ids = self._load_unavailable_transcript_ids()
         self._pending_transcript_contexts: dict[str, dict[str, Any]] = {}
         self._stop_reason = "frontier_exhausted"
         self._planned_records_written = False
@@ -1372,6 +1374,7 @@ class ResearchCrawler:
         )
         self.writer.append(record)
         if not available:
+            self._unavailable_transcript_ids.add(video_id)
             self._record_error(
                 "transcript",
                 RuntimeError(unavailable_reason or "transcript unavailable"),
@@ -1385,6 +1388,7 @@ class ResearchCrawler:
             )
             return None
         self._transcript_ids.add(video_id)
+        self._unavailable_transcript_ids.discard(video_id)
         self._save_state("running")
         return record
 
@@ -1539,6 +1543,7 @@ class ResearchCrawler:
         )
         self.writer.append(record)
         if not available:
+            self._unavailable_transcript_ids.add(video_id)
             self._record_error(
                 "transcript",
                 RuntimeError(unavailable_reason or "transcript unavailable"),
@@ -1552,8 +1557,21 @@ class ResearchCrawler:
             )
             return None
         self._transcript_ids.add(video_id)
+        self._unavailable_transcript_ids.discard(video_id)
         self._save_state("running")
         return record
+
+    def _load_unavailable_transcript_ids(self) -> set[str]:
+        """Restore latest confirmed transcript availability from the audit stream."""
+
+        path = self.writer.path_for("transcript")
+        if not path.is_file():
+            return set()
+        latest: dict[str, bool] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = TranscriptRecord.model_validate_json(line)
+            latest[record.video_id] = record.is_available
+        return {video_id for video_id, available in latest.items() if not available}
 
     def _saved_transcript(self, video_id: str) -> TranscriptRecord | None:
         if video_id not in self._transcript_ids:
@@ -1611,6 +1629,8 @@ class ResearchCrawler:
         for channel, result in zip(selected, completed, strict=False):
             if isinstance(result, Exception):
                 self._record_error("channel", result, channel_id=channel.channel_id)
+                if self._skip_empty_channel_result(channel, result):
+                    continue
                 if first_error is None:
                     first_error = result
                 continue
@@ -1651,10 +1671,28 @@ class ResearchCrawler:
                 raise
             except Exception as exc:
                 self._record_error("channel", exc, channel_id=channel.channel_id)
+                if self._skip_empty_channel_result(channel, exc):
+                    return
                 raise
             self._apply_channel_response(channel, response)
             if progress.exhausted:
                 break
+
+    def _skip_empty_channel_result(
+        self, channel: _DiscoveredChannel, exc: Exception
+    ) -> bool:
+        if not _is_empty_channel_result_error(exc):
+            return False
+        progress = self._channel_progress.setdefault(channel.channel_id, PageProgress())
+        progress.pages_completed += 1
+        progress.next_page_token = None
+        progress.exhausted = True
+        self._progress(
+            "channel",
+            f"No videos returned for {channel.title or channel.channel_id}; skipping",
+        )
+        self._save_state("running")
+        return True
 
     def _apply_channel_response(
         self, channel: _DiscoveredChannel, response: Any
@@ -1672,7 +1710,7 @@ class ResearchCrawler:
                     discovered_from_id=channel.source_ref,
                     source_request_id=request_id,
                     subscribers=response.channel.subscribers,
-                    views=response.channel.views,
+                    views=None,
                     raw_payload=response.channel.model_dump(mode="json"),
                 )
             )
@@ -2425,6 +2463,7 @@ class ResearchCrawler:
             videos_evaluated=len(self._evaluated_video_ids),
             relevant_videos=len(self._relevant_ids),
             transcripts_collected=len(self._transcript_ids),
+            transcripts_unavailable=len(self._unavailable_transcript_ids),
             channels_expanded=len(self._expanded_channel_ids),
             queries_executed=len(self._executed_queries),
             pending_videos=len(pending),
@@ -2436,6 +2475,7 @@ class ResearchCrawler:
             ("videos_evaluated", summary.videos_evaluated),
             ("relevant_videos", summary.relevant_videos),
             ("transcripts_collected", summary.transcripts_collected),
+            ("transcripts_unavailable", summary.transcripts_unavailable),
             ("channels_expanded", summary.channels_expanded),
             ("queries_executed", summary.queries_executed),
             ("pending_videos", summary.pending_videos),
@@ -2458,6 +2498,14 @@ class ResearchCrawler:
 def _request_id(response: Any) -> str | None:
     metadata = getattr(response, "search_metadata", None)
     return getattr(metadata, "id", None) if metadata is not None else None
+
+
+def _is_empty_channel_result_error(exc: Exception) -> bool:
+    return (
+        isinstance(exc, SearchApiError)
+        and exc.status_code == 200
+        and "youtube channel videos didn't return any results" in exc.message.casefold()
+    )
 
 
 def _next_page_token(response: Any) -> str | None:

@@ -54,6 +54,15 @@ No credentials are committed to this repository.
 OpenAI usage and estimated GPT-5.6 Luna cost are recorded in the project audit,
 but they are not a local budget.
 
+Environment settings:
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `SEARCHAPI_API_KEY` | For `start` and `resume`. | SearchAPI credential used for the balance preflight and crawl requests. |
+| `OPENAI_API_KEY` | For `start` and `resume`. | OpenAI credential used for interview suggestions, query expansion, and classification. |
+| `LOGFIRE_TOKEN` | Optional. | Enables remote Logfire telemetry without an interactive local login. |
+| `YT_SEARCHAPI_DISABLE_TELEMETRY=1` | Optional. | Explicitly disables sending telemetry to Logfire. Local JSONL auditing remains enabled. |
+
 ### Optional Logfire observability
 
 The CLI links to [Logfire](https://logfire.pydantic.dev/) for remote runtime
@@ -130,31 +139,57 @@ to accept the screen. You can also add custom examples. The review screen lets
 you change any answer before the crawl begins. Confirmed scope answers are saved
 in `interview_answer.jsonl`.
 
-Useful crawl controls:
+## Configuration reference
 
-```text
---max-queries 8
---max-search-pages 1
---max-channel-pages 1
---max-depth 2
---country us
---interface-language <selected video language>
---searchapi-timeout 90
---searchapi-workers 8
---llm-workers 16
-```
+Every omitted `start` option is collected interactively. “Saved” below means
+the value is written to `crawl_state.json` and reused by later sessions.
 
-New projects suggest 8 concurrent SearchAPI requests and 16 concurrent OpenAI
-classifications. Pass lower values when you intentionally want to throttle a
-run. Resumed projects keep their saved worker counts unless you pass either
-worker option again; the selected value is saved for later resumes.
+### Project and research settings
 
-The selected video language is passed to SearchAPI as the default YouTube
-interface language, which prevents localized titles such as German titles from
-being requested in English. `--interface-language` can override it. The country
-is passed as `gl`, and transcript requests use the selected language as `lang`.
+| Option | Start behavior | Resume behavior | Meaning |
+| --- | --- | --- | --- |
+| `--project PATH` | Required; the directory must be new or empty. | Required; the directory must contain a valid checkpoint. | Project location and stable run ID. Relative paths are resolved to absolute paths. |
+| `--topic TEXT` | Required. | Saved; cannot be changed. | Research topic used by the interview, query expansion, and relevance classifier. |
+| `--language CODE` | Required, for example `de` or `en`. | Saved; cannot be changed. | Required video/transcript language. It is also the default SearchAPI interface language. The crawler does not fall back to another transcript language. |
+| `--start-date YYYY-MM-DD` | Required. | May stay unchanged or move earlier, never later. | Inclusive publication boundary. It is applied after video discovery using an exact video-detail date. Moving it earlier reopens eligible videos already discovered; it does **not** fetch older search or channel pages by itself. |
+| `--country CODE` | Default `us`; two-letter SearchAPI `gl` code. | Saved; cannot be changed. | Geographic context for YouTube search, video-detail, and channel requests. It can affect ranking and localization; it is not a publication-country filter. |
+| `--interface-language CODE` | Defaults to `--language`; SearchAPI `hl` code. | Saved; cannot be changed. | Language requested for YouTube interface text and localized metadata. It does not replace the transcript-language gate. |
+
 See SearchAPI's [`hl` parameter](https://www.searchapi.io/docs/parameters/youtube/hl)
 and [transcript language behavior](https://www.searchapi.io/docs/youtube-transcripts).
+
+### Budget and frontier settings
+
+| Option | Range/default | Resume rule | Meaning and cost behavior |
+| --- | --- | --- | --- |
+| `--max-credits N` | Minimum 4; required when starting. | Start only. | Initial lifetime SearchAPI grant. It is a hard local accounting limit, not a per-session allowance. |
+| `--add-credits N` | Integer at least 0; default 0. | Resume only; additive. | Adds exactly `N` to the saved lifetime grant. Zero uses existing unspent capacity. Credits alone do not expose new work after a completed frontier. |
+| `--max-queries N` | 2–18; default 8. | May only increase. | Enables the first `N` variants in the query plan prepared at project creation. Each enabled query has its own pagination state. Raising this beyond the number of prepared variants has no effect. |
+| `--max-search-pages N` | 1–10; default 1. | May only increase. | Maximum pages fetched **for each enabled search query**, not across the whole project. For example, 8 queries × 2 pages permits at most 16 search-page requests. Raising 1 → 2 resumes each non-exhausted query from its saved continuation token; it does not repeat page 1. Each uncached page normally costs one SearchAPI credit. |
+| `--max-channel-pages N` | 1–10; default 1. | May only increase. | Maximum pages fetched **for each discovered channel**. This can fan out much more than `--max-search-pages` because many channels may be discovered. Raising the limit continues every non-exhausted channel from its saved token. Each uncached page normally costs one credit. |
+| `--max-depth N` | 0–5; default 2. | May only increase. | Maximum discovery-graph depth. Search-result videos start at depth 0. Depth 0 evaluates only those videos; depth 1 also admits their related videos and channels; higher values continue outward from relevant videos. Increasing depth exposes already saved deeper nodes and permits further related/channel discovery. |
+
+Search pages and channel pages discover candidate IDs. Candidate video-detail
+requests and requested transcripts can each consume additional credits, so the
+page-request bounds are not total-run cost bounds. Duplicate candidates are
+deduplicated by video ID, identical cached requests cost no local credits, and a
+provider result chain may exhaust before reaching its configured page maximum.
+
+The transcript reserve is derived automatically from the lifetime grant. It
+protects capacity from discovery fan-out, but it is not a transcript maximum:
+transcripts may transfer still-unused discovery capacity when necessary.
+
+### Runtime settings
+
+| Option | Range/default | Resume behavior | Meaning |
+| --- | --- | --- | --- |
+| `--searchapi-timeout SECONDS` | Greater than 0; default 90. | Saved; cannot currently be changed on resume. | Timeout for one SearchAPI request. A timeout is recorded as an error; ambiguous dispatched work remains conservatively charged. |
+| `--searchapi-workers N` | 1–32; default 8. | Optional replacement; saved for later resumes. | Maximum concurrent independent SearchAPI requests. Pagination within one query or channel remains sequential. This affects throughput, not frontier size. |
+| `--llm-workers N` | 1–32; default 16. | Optional replacement; saved for later resumes. | Maximum concurrent OpenAI video-classification requests. This affects throughput, not which candidates are eligible. |
+
+The classifier model is currently fixed at `gpt-5.6-luna`. Transcript-stage
+classification receives at most 12,000 sampled transcript characters; neither
+value is currently exposed as a CLI setting.
 
 The interview and topic expansion happen before the first resumable checkpoint
 is created. The live dashboard appears while the query plan is compiling, but
@@ -230,6 +265,7 @@ uv run yt-crawl dashboard \
 uv run yt-crawl resume \
   --project runs/heat-pump-retrofits \
   --add-credits 30 \
+  --start-date 2023-01-01 \
   --max-queries 8 \
   --max-search-pages 2 \
   --max-depth 2 \
@@ -243,21 +279,28 @@ uv run yt-crawl dashboard \
 
 `--add-credits` is additive: the example's lifetime project grant becomes
 `12 + 30 = 42` credits, minus credits already spent. It does not reset the cap
-to 30. Resume controls are monotonic: omit a control to keep its current value,
-or provide a higher value to expose additional queries, pages, or graph depth.
+to 30. Resume frontier controls are monotonic: omit a control to keep its current
+value, or provide a higher value to expose additional queries, pages, or graph
+depth. Worker counts are runtime controls and may move in either direction.
+The publication boundary is monotonic in the other direction: `--start-date`
+may move the saved date earlier, but never later. Previously discovered videos
+rejected only because they preceded the old boundary are reopened when their
+exact publication date falls within the newly admitted interval. Their original
+decisions remain in the append-only audit stream, and resumed evaluation writes
+newer decisions.
 Use `--add-credits 0` to retry a failed session when the existing grant still
 has unspent credits across its pools; unspent discovery credits can also fund
 transcripts whenever needed, including after the current discovery work is
 exhausted. Discovery can never use transcript capacity. Work marked
 `deferred_budget` is
 provisional, not final: resume retries it when capacity becomes available. A
-project that completed under its current controls
-must increase at least one `--max-*` scope control when resumed. Adding credits
-alone cannot discover more work, so the CLI rejects that no-op before checking
-funding or changing the saved grant. The terminal and dashboard therefore
-recommend `--add-credits 0` plus one eligible scope increase while completed
-projects still have credits; they recommend added credits only after the
-aggregate SearchAPI balance reaches zero. Failed or budget-stopped projects
+project that completed under its current controls must either increase at least
+one `--max-*` scope control or move `--start-date` earlier when resumed. Adding
+credits alone cannot discover more work, so the CLI rejects that no-op before
+checking funding or changing the saved grant. The terminal and dashboard
+therefore recommend `--add-credits 0` plus one eligible scope increase while
+completed projects still have credits; they recommend added credits only after
+the aggregate SearchAPI balance reaches zero. Failed or budget-stopped projects
 instead resume their current frontier before widening scope.
 
 The old multi-engine example was renamed to `example.py`. It performs real,
@@ -267,7 +310,7 @@ billable requests and is not part of the crawler workflow.
 
 Each project is one directory, such as `runs/heat-pump-retrofits/`. All resumed
 sessions append to the same audit streams. After a resume funding check passes,
-the expanded grant and monotonic controls are atomically committed to
+the expanded grant and monotonic scope controls are atomically committed to
 `crawl_state.json` before the resume audit row or any crawler provider is
 initialized. `.cache/searchapi/` is the unlimited-TTL, project-local request
 cache. Files are split by record type so
@@ -280,11 +323,14 @@ DuckDB and line-oriented tools can ingest them independently:
 - `api_call.jsonl`, `budget_event.jsonl`, `run_error.jsonl`
 - `raw/*.jsonl` for typed SearchAPI response provenance
 
-Duplicate discovery edges are retained, while each video ID is evaluated and
-transcribed at most once across the project. The model always returns a binary
-`relevant` or `irrelevant` decision. A metadata-stage `relevant` is persisted
-as the operational `needs_transcript` disposition while its transcript is
-reserved and fetched; only transcript-stage decisions are final inclusions.
+Duplicate discovery edges are retained. Each video ID is normally evaluated and
+transcribed at most once, but moving `--start-date` earlier can reevaluate a
+candidate whose prior terminal decision was solely the old date boundary. Both
+decisions remain in the audit, and downstream views use the latest one. The
+model always returns a binary `relevant` or `irrelevant` decision. A metadata-stage
+`relevant` is persisted as the operational `needs_transcript` disposition while
+its transcript is reserved and fetched; only transcript-stage decisions are
+final inclusions.
 Unresolved candidates can also retain `deferred_budget` or `error`. The exact
 compiled system prompt, expansion, prompt hash, and Responses API IDs are
 retained for decision auditability.
@@ -299,6 +345,14 @@ uv run yt-crawl dashboard --run-dir runs/heat-pump-retrofits
 
 The generated dashboard opens in your default browser automatically. Use
 `--no-open` when running in automation or on a headless machine.
+
+Static dashboard options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--run-dir PATH` | Required. | Existing project directory containing the cumulative JSONL audit. |
+| `--output PATH` | `<run-dir>/dashboard.html` | HTML file to create or replace. |
+| `--open` / `--no-open` | `--open` | Whether to open the generated file in the default browser. Generation itself is offline. |
 
 Generate the committed mock example without credentials or network calls:
 
@@ -342,6 +396,16 @@ DuckDB relations when they change, and does not create a second persistent
 database. Use `--no-open` for automation, or `--port` to choose another local
 port. During dashboard development, run `bun run dev` in `dashboard-app` and
 keep the Python command running for the `/api` proxy.
+
+Live dashboard options:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--run-dir PATH` | Required. | Existing project directory read by DuckDB. |
+| `--host ADDRESS` | `127.0.0.1` | Interface to bind. The default is local-only; binding a public interface exposes the dashboard without application authentication. |
+| `--port N` | `8765`; range 1–65535. | Local HTTP port. |
+| `--web-dir PATH` | `dashboard-app/dist` | Directory containing the built frontend assets. |
+| `--open` / `--no-open` | `--open` | Whether to open the live dashboard automatically. |
 
 The analysis is intentionally transparent and DuckDB-only. It includes
 candidate and decision funnels, observed views/likes distributions, channel

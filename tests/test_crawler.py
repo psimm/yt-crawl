@@ -11,8 +11,8 @@ from rich.console import Console
 
 from yt_searchapi.budget import SearchApiCreditBudget
 from yt_searchapi.classifier import RelevanceClassifier, RelevanceDecision
-from yt_searchapi.client import SearchApiClient
-from yt_searchapi.crawler import CrawlConfig, ResearchCrawler
+from yt_searchapi.client import SearchApiClient, SearchApiError
+from yt_searchapi.crawler import CrawlConfig, ResearchCrawler, _DiscoveredChannel
 from yt_searchapi.models import (
     youtube,
     youtube_channel_videos,
@@ -25,7 +25,7 @@ from yt_searchapi.prompts import (
     LlmUsage,
     TopicExpansion,
 )
-from yt_searchapi.records import RunStatus
+from yt_searchapi.records import DiscoverySource, RunStatus
 from yt_searchapi.run_tui import RunDashboard
 from yt_searchapi.settings import DEFAULT_LLM_WORKERS, DEFAULT_SEARCHAPI_WORKERS
 from yt_searchapi.state import ProjectStateStore
@@ -157,7 +157,32 @@ class ChannelSearchApi(FakeSearchApi):
 
     def channel_videos(self, requests):
         self.channel_calls += 1
-        return [youtube_channel_videos.SearchResponse(videos=[])]
+        return [
+            youtube_channel_videos.SearchResponse(
+                channel=youtube_channel_videos.Channel(
+                    id="channel-1",
+                    title="Topic channel",
+                    subscribers=123,
+                ),
+                videos=[],
+            )
+        ]
+
+
+class EmptyChannelSearchApi(FakeSearchApi):
+    def __init__(self) -> None:
+        super().__init__()
+        self.channel_calls = 0
+
+    def channel_videos(self, requests, *, return_exceptions=False):
+        self.channel_calls += len(requests)
+        errors = [
+            SearchApiError(200, "YouTube Channel Videos didn't return any results.")
+            for _request in requests
+        ]
+        if return_exceptions:
+            return errors
+        raise errors[0]
 
 
 class FailingTranscriptSearchApi(FakeSearchApi):
@@ -392,6 +417,7 @@ def test_crawler_transcribes_before_finishing_candidate(tmp_path) -> None:
     assert summary.status is RunStatus.COMPLETED
     assert summary.relevant_videos == 1
     assert summary.transcripts_collected == 1
+    assert summary.transcripts_unavailable == 0
     assert api.search_calls == 2
     assert api.video_calls == 1
     assert api.transcript_calls == 1
@@ -465,6 +491,58 @@ def test_max_depth_one_expands_search_result_channels(tmp_path) -> None:
     assert summary.status is RunStatus.COMPLETED
     assert summary.channels_expanded == 1
     assert api.channel_calls == 1
+    channels = [
+        json.loads(line)
+        for line in (tmp_path / "run-1" / "channel.jsonl").read_text().splitlines()
+    ]
+    expanded_channel = next(
+        channel for channel in channels if channel["subscribers"] is not None
+    )
+    assert expanded_channel["subscribers"] == 123
+    assert expanded_channel["views"] is None
+
+
+def test_empty_channel_result_is_skipped_in_sequential_expansion(tmp_path) -> None:
+    api = EmptyChannelSearchApi()
+    crawler = make_crawler(tmp_path, api)
+    channel = _DiscoveredChannel(
+        channel_id="channel-empty",
+        title="Empty channel",
+        source=DiscoverySource.SEARCH,
+        source_ref="research topic",
+        depth=0,
+    )
+
+    crawler._expand_channel(channel)
+
+    progress = crawler._channel_progress[channel.channel_id]
+    assert progress.pages_completed == 1
+    assert progress.exhausted is True
+    assert api.channel_calls == 1
+
+
+def test_empty_channel_result_does_not_abort_channel_batch(tmp_path) -> None:
+    api = EmptyChannelSearchApi()
+    crawler = make_crawler(tmp_path, api)
+    channel = _DiscoveredChannel(
+        channel_id="channel-empty",
+        title="Empty channel",
+        source=DiscoverySource.SEARCH,
+        source_ref="research topic",
+        depth=0,
+    )
+
+    crawler._expand_channel_batch([channel])
+
+    progress = crawler._channel_progress[channel.channel_id]
+    assert progress.pages_completed == 1
+    assert progress.exhausted is True
+    assert api.channel_calls == 1
+    error = json.loads(
+        (tmp_path / "run-1" / "run_error.jsonl").read_text().splitlines()[-1]
+    )
+    assert error["channel_id"] == channel.channel_id
+    assert error["exception_type"] == "SearchApiError"
 
 
 def test_wrong_language_is_rejected_without_transcript_spend(tmp_path) -> None:
@@ -587,6 +665,7 @@ def test_unavailable_transcript_response_is_an_error_not_irrelevant(tmp_path) ->
     ]
     assert summary.status is RunStatus.COMPLETED
     assert summary.transcripts_collected == 0
+    assert summary.transcripts_unavailable == 1
     assert transcripts[0]["is_available"] is False
     assert transcripts[0]["unavailable_reason"] == "Transcript disabled by uploader"
     assert [decision["label"] for decision in decisions] == [
@@ -595,6 +674,8 @@ def test_unavailable_transcript_response_is_an_error_not_irrelevant(tmp_path) ->
     ]
     assert decisions[-1]["reason"] == "transcript_response_error"
     assert errors[-1]["message"] == "Transcript disabled by uploader"
+    restored = make_crawler(tmp_path, api)
+    assert restored._unavailable_transcript_ids == {"video-1"}
 
 
 def test_empty_transcript_response_is_an_error_not_irrelevant(tmp_path) -> None:
@@ -614,6 +695,7 @@ def test_empty_transcript_response_is_an_error_not_irrelevant(tmp_path) -> None:
     assert summary.status is RunStatus.COMPLETED
     assert transcript["is_available"] is False
     assert transcript["unavailable_reason"] == "empty_transcript"
+    assert summary.transcripts_unavailable == 1
     assert [decision["label"] for decision in decisions] == [
         "needs_transcript",
         "error",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from collections.abc import Sequence
@@ -79,6 +80,22 @@ class ChannelVideosRequest(TypedDict, total=False):
 
 
 BASE_URL = "https://www.searchapi.io/api/v1"
+
+
+def _normalize_provider_counts(value: object) -> object:
+    """Repair near-integer subscriber counts caused by provider float math."""
+    if isinstance(value, list):
+        return [_normalize_provider_counts(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    normalized = {key: _normalize_provider_counts(item) for key, item in value.items()}
+    subscribers = normalized.get("subscribers")
+    if isinstance(subscribers, float) and math.isfinite(subscribers):
+        nearest = round(subscribers)
+        tolerance = max(1e-9, 4 * math.ulp(subscribers))
+        if abs(subscribers - nearest) <= tolerance:
+            normalized["subscribers"] = nearest
+    return normalized
 
 
 class SearchApiError(Exception):
@@ -689,7 +706,7 @@ class SearchApiClient:
             cached = self._cache.get(key)
             if cached is not None:
                 logger.debug("cache hit engine={} params={}", engine, cleaned)
-                return model.model_validate(cached)
+                return model.model_validate(_normalize_provider_counts(cached))
         response, elapsed = self._request_with_retries(
             "/search",
             params=cleaned,
@@ -705,7 +722,7 @@ class SearchApiClient:
                 elapsed,
             )
             raise SearchApiError(response.status_code, message)
-        result = model.model_validate(data)
+        result = model.model_validate(_normalize_provider_counts(data))
         if self._cache is not None:
             self._cache.set(
                 key,

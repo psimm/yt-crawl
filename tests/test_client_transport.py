@@ -113,6 +113,48 @@ def test_malformed_response_is_not_cached(tmp_path) -> None:
     assert len(requests) == 2
 
 
+def test_near_integer_subscriber_count_is_normalized() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"channel": {"subscribers": 8119.999999999999}},
+            request=request,
+        )
+
+    http = httpx.Client(
+        base_url="https://searchapi.test/api/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        client = SearchApiClient("test-key", client=http, max_retries=0)
+        response = client.video([{"video_id": "video-1"}])[0]
+    finally:
+        http.close()
+
+    assert response.channel is not None
+    assert response.channel.subscribers == 8120
+
+
+def test_fractional_subscriber_count_remains_invalid() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"channel": {"subscribers": 8119.5}},
+            request=request,
+        )
+
+    http = httpx.Client(
+        base_url="https://searchapi.test/api/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        client = SearchApiClient("test-key", client=http, max_retries=0)
+        with pytest.raises(ValidationError):
+            client.video([{"video_id": "video-1"}])
+    finally:
+        http.close()
+
+
 def test_independent_video_and_transcript_requests_use_bounded_parallelism() -> None:
     lock = threading.Lock()
     active = 0

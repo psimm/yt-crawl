@@ -1,10 +1,13 @@
 import json
 from contextlib import contextmanager
+from datetime import date
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
+from typer.main import get_command
 from typer.testing import CliRunner
 
 import yt_searchapi.cli as cli
@@ -125,6 +128,23 @@ def test_help_does_not_require_credentials_or_make_queries() -> None:
     assert "SearchAPI" in result.stdout
     assert "start" in result.stdout
     assert "resume" in result.stdout
+
+
+def test_readme_documents_every_cli_option() -> None:
+    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    root = get_command(app)
+    documented_options = {
+        option
+        for command in root.commands.values()
+        for parameter in command.params
+        for option in (*parameter.opts, *parameter.secondary_opts)
+        if option.startswith("--")
+    }
+
+    missing = sorted(
+        option for option in documented_options if f"`{option}" not in readme
+    )
+    assert missing == []
 
 
 def test_legacy_missing_prompt_version_is_rejected_before_credentials(
@@ -688,6 +708,29 @@ def test_resume_rejects_control_decrease_without_project_log(tmp_path) -> None:
     assert not (project / "crawler.log").exists()
 
 
+def test_resume_rejects_later_start_date_before_credentials(
+    tmp_path, monkeypatch
+) -> None:
+    project = tmp_path / "later-start-date"
+    _checkpoint(project)
+
+    monkeypatch.setattr(
+        cli,
+        "_credentials",
+        lambda: (_ for _ in ()).throw(AssertionError("credentials must not run")),
+    )
+    result = CliRunner().invoke(
+        app,
+        ["resume", "--project", str(project), "--start-date", "2026-02-01"],
+    )
+
+    assert result.exit_code == 2
+    message = " ".join(result.stderr.replace("│", "").split())
+    assert "cannot move later from 2026-01-01 to 2026-02-01" in message
+    assert ProjectStateStore(project).load().start_date == date(2026, 1, 1)
+    assert not (project / "run_config.jsonl").exists()
+
+
 def test_account_preflight_rejects_underfunded_plan(monkeypatch) -> None:
     calls = []
 
@@ -876,6 +919,7 @@ def test_final_summary_shows_logfire_control_at_common_widths(
         channels_expanded=0,
         queries_executed=1,
         pending_videos=1,
+        transcripts_unavailable=3,
     )
     budget = SearchApiCreditBudget(4, 1)
 
@@ -892,6 +936,8 @@ def test_final_summary_shows_logfire_control_at_common_widths(
     )
 
     text = output.getvalue()
+    assert "Wanted transcripts not found" in text
+    assert "3" in text
     assert "SearchAPI unspent across pools" in text
     assert "Discovery credits: capacity" in text
     assert "Discovery credits: spent" in text
@@ -1074,6 +1120,150 @@ def test_completed_project_rejects_credits_only_before_funding(
     assert "credits alone do not widen crawl" in result.stderr
     assert ProjectStateStore(project).load().budget.max_credits == 4
     assert not (project / "run_config.jsonl").exists()
+
+
+def test_completed_project_can_move_start_date_earlier_and_reopen_candidates(
+    monkeypatch, tmp_path
+) -> None:
+    project = tmp_path / "earlier-start-date"
+    state = _checkpoint(project, status="completed").model_copy(
+        update={
+            "discovered_videos": {
+                "newly-eligible": {},
+                "still-too-old": {},
+                "other-rejection": {},
+            },
+            "evaluated_video_ids": [
+                "newly-eligible",
+                "still-too-old",
+                "other-rejection",
+            ],
+            "finalized_video_ids": [
+                "newly-eligible",
+                "still-too-old",
+                "other-rejection",
+            ],
+            "dispositioned_video_ids": [
+                "newly-eligible",
+                "still-too-old",
+                "other-rejection",
+            ],
+            "terminal_video_ids": [
+                "newly-eligible",
+                "still-too-old",
+                "other-rejection",
+            ],
+        }
+    )
+    ProjectStateStore(project).save(state)
+    candidates = [
+        {"video_id": "newly-eligible", "published_at": "2025-06-01T00:00:00Z"},
+        {"video_id": "still-too-old", "published_at": "2023-06-01T00:00:00Z"},
+        {"video_id": "other-rejection", "published_at": "2025-06-01T00:00:00Z"},
+        {"video_id": "newly-eligible", "published_at": None},
+    ]
+    decisions = [
+        {
+            "video_id": "newly-eligible",
+            "reason": "published_before_start_date: '2025-06-01'",
+        },
+        {
+            "video_id": "still-too-old",
+            "reason": "published_before_start_date: '2023-06-01'",
+        },
+        {
+            "video_id": "other-rejection",
+            "reason": "published_before_start_date: '2025-06-01'",
+        },
+        {
+            "video_id": "other-rejection",
+            "reason": "requested_language_transcript_not_available",
+        },
+    ]
+    (project / "video_candidate.jsonl").write_text(
+        "".join(json.dumps(item) + "\n" for item in candidates),
+        encoding="utf-8",
+    )
+    (project / "relevance_decision.jsonl").write_text(
+        "".join(json.dumps(item) + "\n" for item in decisions),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_preflight_funding", lambda *_args: 100)
+    monkeypatch.setattr(
+        cli,
+        "_openai_client",
+        lambda _api_key: (_ for _ in ()).throw(RuntimeError("stop after commit")),
+    )
+    result = CliRunner().invoke(
+        app,
+        ["resume", "--project", str(project), "--start-date", "2025-01-01"],
+    )
+
+    assert result.exit_code == 1
+    committed = ProjectStateStore(project).load()
+    assert committed.start_date == date(2025, 1, 1)
+    assert "newly-eligible" not in committed.finalized_video_ids
+    assert "newly-eligible" not in committed.dispositioned_video_ids
+    assert "newly-eligible" not in committed.terminal_video_ids
+    assert "newly-eligible" in committed.evaluated_video_ids
+    assert set(committed.terminal_video_ids) == {"still-too-old", "other-rejection"}
+    audit = (project / "run_config.jsonl").read_text(encoding="utf-8")
+    assert '"start_date":"2025-01-01"' in audit
+
+
+def test_stale_date_rejection_reopens_at_saved_boundary(tmp_path) -> None:
+    project = tmp_path / "stale-date-rejection"
+    state = _checkpoint(project, status="completed").model_copy(
+        update={
+            "discovered_videos": {"stale": {}},
+            "finalized_video_ids": ["stale"],
+            "dispositioned_video_ids": ["stale"],
+            "terminal_video_ids": ["stale"],
+        }
+    )
+    ProjectStateStore(project).save(state)
+    (project / "video_candidate.jsonl").write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "video_id": "stale",
+                        "published_at": "2026-02-01T00:00:00Z",
+                    }
+                ),
+                json.dumps({"video_id": "stale", "published_at": None}),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (project / "relevance_decision.jsonl").write_text(
+        json.dumps(
+            {
+                "video_id": "stale",
+                "reason": "published_before_start_date: 'Feb 1, 2026'",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    reopened = cli._start_date_reopened_video_ids(project, state, state.start_date)
+
+    assert reopened == {"stale"}
+    cli._require_completed_project_expansion(
+        state,
+        {
+            "max_depth": state.max_depth,
+            "max_queries": state.max_queries,
+            "max_search_pages": state.max_search_pages,
+            "max_channel_pages": state.max_channel_pages,
+        },
+        start_date=state.start_date,
+        reopened_video_ids=reopened,
+    )
 
 
 def test_completed_project_rejects_max_queries_beyond_prepared_plan_before_funding(
@@ -1375,6 +1565,18 @@ def test_plan_summaries_are_compact_and_show_only_resume_changes(tmp_path) -> No
         f"{DEFAULT_SEARCHAPI_WORKERS - 1} · OpenAI workers "
         f"{DEFAULT_LLM_WORKERS} → {DEFAULT_LLM_WORKERS + 1}"
     )
+    assert cli._resume_plan_summary(
+        credits_added=0,
+        new_grant=4,
+        previous_state=state,
+        controls={
+            "max_depth": 0,
+            "max_queries": 2,
+            "max_search_pages": 1,
+            "max_channel_pages": 1,
+        },
+        start_date=date(2025, 1, 1),
+    ) == ("Resume plan · grant +0 → 4 · start date 2026-01-01 → 2025-01-01")
 
 
 def test_commit_resume_state_copies_instead_of_mutating_loaded_state(tmp_path) -> None:

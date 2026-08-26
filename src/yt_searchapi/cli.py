@@ -459,6 +459,16 @@ def resume(
             ),
         ),
     ] = 0,
+    start_date: Annotated[
+        str | None,
+        typer.Option(
+            "--start-date",
+            help=(
+                "Move the earliest publication date earlier. A resumed project "
+                "cannot move this date later. Use YYYY-MM-DD."
+            ),
+        ),
+    ] = None,
     max_depth: Annotated[
         int | None,
         typer.Option("--max-depth", min=0, max=5, help="Increase graph depth."),
@@ -527,6 +537,28 @@ def resume(
         validate_pending_transcript_decisions(state)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--project") from exc
+    try:
+        effective_start_date = (
+            state.start_date if start_date is None else date.fromisoformat(start_date)
+        )
+        if start_date is not None and effective_start_date.isoformat() != start_date:
+            raise ValueError("start date is not canonical ISO format")
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "--start-date must use ISO format YYYY-MM-DD",
+            param_hint="--start-date",
+        ) from exc
+    if effective_start_date > state.start_date:
+        raise typer.BadParameter(
+            f"--start-date cannot move later from {state.start_date.isoformat()} "
+            f"to {effective_start_date.isoformat()}; it may only move earlier.",
+            param_hint="--start-date",
+        )
+    reopened_video_ids = _start_date_reopened_video_ids(
+        project,
+        state,
+        effective_start_date,
+    )
     controls = _expanded_controls(
         state,
         max_depth=max_depth,
@@ -534,7 +566,12 @@ def resume(
         max_search_pages=max_search_pages,
         max_channel_pages=max_channel_pages,
     )
-    _require_completed_project_expansion(state, controls)
+    _require_completed_project_expansion(
+        state,
+        controls,
+        start_date=effective_start_date,
+        reopened_video_ids=reopened_video_ids,
+    )
     effective_searchapi_workers = (
         state.searchapi_workers if searchapi_workers is None else searchapi_workers
     )
@@ -570,7 +607,7 @@ def resume(
         topic_query=state.topic_query,
         expanded_queries=tuple(item["text"] for item in state.planned_queries),
         language=state.language,
-        start_date=state.start_date,
+        start_date=effective_start_date,
         max_searchapi_credits=new_grant,
         transcript_reserve_credits=budget.snapshot().transcript_capacity,
         session_action="resume",
@@ -593,11 +630,17 @@ def resume(
         for name, value in controls.items()
         if value != getattr(state, name)
     ]
+    if effective_start_date != state.start_date:
+        changed_controls.append(
+            f"start_date {state.start_date.isoformat()} → "
+            f"{effective_start_date.isoformat()}"
+        )
     plan_summary = _resume_plan_summary(
         credits_added=add_credits,
         new_grant=new_grant,
         previous_state=state,
         controls=controls,
+        start_date=effective_start_date,
         searchapi_workers=effective_searchapi_workers,
         llm_workers=effective_llm_workers,
     )
@@ -613,14 +656,16 @@ def resume(
     failure_stage = "resume_checkpoint_commit"
     try:
         # The mutable checkpoint is authoritative for dispatch. Commit the funded
-        # grant, monotonic controls, and worker overrides before the audit row or
-        # any provider setup, so a setup failure can be retried without losing
-        # the approved configuration.
+        # grant, monotonic scope, and worker overrides before the audit row or any
+        # provider setup, so a setup failure can be retried without losing the
+        # approved configuration.
         state = _commit_resume_state(
             state_store,
             state,
             budget,
             controls,
+            start_date=effective_start_date,
+            reopened_video_ids=reopened_video_ids,
             searchapi_workers=effective_searchapi_workers,
             llm_workers=effective_llm_workers,
         )
@@ -628,7 +673,7 @@ def resume(
         logger.info(
             "Resume funded project={} previous_grant={} added={} new_grant={} "
             "already_spent={} unused_before={} account_credits={} controls={} "
-            "searchapi_workers={} llm_workers={} changed={}",
+            "searchapi_workers={} llm_workers={} reopened_videos={} changed={}",
             project,
             previous_budget.max_credits,
             add_credits,
@@ -639,6 +684,7 @@ def resume(
             _format_controls(controls),
             state.searchapi_workers,
             state.llm_workers,
+            len(reopened_video_ids),
             changed_controls or ["none"],
         )
         failure_stage = "resume_dashboard_start"
@@ -1153,6 +1199,7 @@ def _resume_plan_summary(
     new_grant: int,
     previous_state: CrawlProjectState,
     controls: dict[str, int],
+    start_date: date | None = None,
     searchapi_workers: int | None = None,
     llm_workers: int | None = None,
 ) -> str:
@@ -1167,6 +1214,15 @@ def _resume_plan_summary(
         for name in labels
         if controls[name] != getattr(previous_state, name)
     ]
+    effective_start_date = (
+        previous_state.start_date if start_date is None else start_date
+    )
+    if effective_start_date != previous_state.start_date:
+        changes.append(
+            "start date "
+            f"{previous_state.start_date.isoformat()} → "
+            f"{effective_start_date.isoformat()}"
+        )
     frontier = " · ".join(changes) if changes else "frontier unchanged"
     effective_searchapi_workers = (
         previous_state.searchapi_workers
@@ -1210,6 +1266,9 @@ def _require_new_project(project: Path) -> None:
 def _require_completed_project_expansion(
     state: CrawlProjectState,
     controls: dict[str, int],
+    *,
+    start_date: date | None = None,
+    reopened_video_ids: set[str] | None = None,
 ) -> None:
     """Prevent a no-op credit grant after all current scope has completed."""
 
@@ -1222,7 +1281,14 @@ def _require_completed_project_expansion(
         for name, value in controls.items()
         if name != "max_queries"
     )
-    if state.last_status == RunStatus.COMPLETED.value and not controls_increased:
+    date_scope_increased = start_date is not None and start_date < state.start_date
+    date_rejections_reopened = bool(reopened_video_ids)
+    if (
+        state.last_status == RunStatus.COMPLETED.value
+        and not controls_increased
+        and not date_scope_increased
+        and not date_rejections_reopened
+    ):
         query_limit_note = ""
         if controls["max_queries"] > int(state.max_queries):
             query_limit_note = (
@@ -1231,7 +1297,8 @@ def _require_completed_project_expansion(
             )
         raise typer.BadParameter(
             "Project complete under current controls; increase at least one scope "
-            "control because credits alone do not widen crawl."
+            "control because credits alone do not widen crawl. Alternatively, "
+            "move --start-date earlier."
             f"{query_limit_note}"
         )
 
@@ -1242,15 +1309,25 @@ def _commit_resume_state(
     budget: SearchApiCreditBudget,
     controls: dict[str, int],
     *,
+    start_date: date | None = None,
+    reopened_video_ids: set[str] | None = None,
     searchapi_workers: int | None = None,
     llm_workers: int | None = None,
 ) -> CrawlProjectState:
     """Atomically commit a funded resume grant before work can be dispatched."""
 
+    reopened = set() if reopened_video_ids is None else reopened_video_ids
     updated = state.model_copy(
         deep=True,
         update={
             **controls,
+            "start_date": state.start_date if start_date is None else start_date,
+            "finalized_video_ids": sorted(set(state.finalized_video_ids) - reopened),
+            "dispositioned_video_ids": sorted(
+                set(state.dispositioned_video_ids) - reopened
+            ),
+            "terminal_video_ids": sorted(set(state.terminal_video_ids) - reopened),
+            "queued_video_ids": sorted(set(state.queued_video_ids) - reopened),
             "searchapi_workers": (
                 state.searchapi_workers
                 if searchapi_workers is None
@@ -1263,6 +1340,78 @@ def _commit_resume_state(
     )
     state_store.save(updated)
     return updated
+
+
+def _start_date_reopened_video_ids(
+    project: Path,
+    state: CrawlProjectState,
+    start_date: date,
+) -> set[str]:
+    """Return stale date rejections admitted by the effective boundary."""
+
+    candidate_path = project / "video_candidate.jsonl"
+    decision_path = project / "relevance_decision.jsonl"
+    if not candidate_path.exists() or not decision_path.exists():
+        return set()
+
+    try:
+        latest_candidates = _latest_dated_candidate_records(candidate_path)
+        latest_decisions = _latest_jsonl_records(decision_path, "video_id")
+        reopened: set[str] = set()
+        for video_id, decision in latest_decisions.items():
+            if video_id not in state.discovered_videos:
+                continue
+            reason = str(decision.get("reason", ""))
+            if not reason.startswith("published_before_start_date"):
+                continue
+            published_at = latest_candidates.get(video_id, {}).get("published_at")
+            if not isinstance(published_at, str):
+                continue
+            published_date = date.fromisoformat(published_at[:10])
+            if published_date >= start_date:
+                reopened.add(video_id)
+        return reopened
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise typer.BadParameter(
+            "Cannot safely change --start-date because the existing candidate "
+            "or decision audit stream is invalid.",
+            param_hint="--start-date",
+        ) from exc
+
+
+def _latest_jsonl_records(path: Path, key: str) -> dict[str, dict[str, object]]:
+    """Read the last JSON object for each key from an append-only audit stream."""
+
+    latest: dict[str, dict[str, object]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict) or not isinstance(payload.get(key), str):
+                raise ValueError(f"invalid {path.name} record")
+            latest[str(payload[key])] = payload
+    return latest
+
+
+def _latest_dated_candidate_records(path: Path) -> dict[str, dict[str, object]]:
+    """Read each video's latest candidate record containing an exact date."""
+
+    latest: dict[str, dict[str, object]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            video_id = payload.get("video_id") if isinstance(payload, dict) else None
+            published_at = (
+                payload.get("published_at") if isinstance(payload, dict) else None
+            )
+            if not isinstance(video_id, str):
+                raise ValueError(f"invalid {path.name} record")
+            if isinstance(published_at, str):
+                latest[video_id] = payload
+    return latest
 
 
 def _expanded_controls(
@@ -1327,6 +1476,7 @@ def _print_summary(
     for label, value in (
         ("Relevant videos", summary.relevant_videos),
         ("Transcripts", summary.transcripts_collected),
+        ("Wanted transcripts not found", summary.transcripts_unavailable),
         ("Videos evaluated", summary.videos_evaluated),
         ("Videos discovered", summary.videos_discovered),
         ("SearchAPI lifetime grant", search.max_credits),
