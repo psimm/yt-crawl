@@ -299,6 +299,7 @@ def make_project_crawler(
         start_date=date(2026, 1, 1),
         max_queries=2,
         max_depth=0,
+        searchapi_retries=0,
     )
     return ResearchCrawler(
         config=config,
@@ -421,6 +422,7 @@ def test_failed_session_resumes_at_saved_page_token(tmp_path) -> None:
         max_queries=2,
         max_search_pages=2,
         max_depth=0,
+        searchapi_retries=0,
     )
     budget = SearchApiCreditBudget(10, 3)
     first = make_project_crawler(project, api, budget, config=config).run()
@@ -455,6 +457,7 @@ def test_failed_video_detail_is_retried_without_repeating_search(tmp_path) -> No
         start_date=date(2026, 1, 1),
         max_queries=1,
         max_depth=0,
+        searchapi_retries=0,
     )
     first = make_project_crawler(
         project,
@@ -490,6 +493,7 @@ def test_failed_transcript_dispatch_resumes_at_transcript_boundary(tmp_path) -> 
         start_date=date(2026, 1, 1),
         max_queries=1,
         max_depth=0,
+        searchapi_retries=0,
     )
     first_budget = SearchApiCreditBudget(5, 2)
     first = make_project_crawler(
@@ -538,6 +542,7 @@ def test_pending_transcript_reservation_survives_interruption_and_cache_change(
         start_date=date(2026, 1, 1),
         max_queries=1,
         max_depth=0,
+        searchapi_retries=0,
     )
     crawler = make_project_crawler(
         project,
@@ -595,6 +600,7 @@ def test_interrupted_uncached_transcript_retry_charges_both_dispatches(
         start_date=date(2026, 1, 1),
         max_queries=1,
         max_depth=0,
+        searchapi_retries=0,
     )
     crawler = make_project_crawler(
         project,
@@ -637,6 +643,7 @@ def test_interrupted_transcript_retry_borrows_one_unspent_discovery_credit(
         start_date=date(2026, 1, 1),
         max_queries=1,
         max_depth=0,
+        searchapi_retries=0,
     )
     crawler = make_project_crawler(
         project,

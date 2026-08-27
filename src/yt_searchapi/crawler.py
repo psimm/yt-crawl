@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import random
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import Any
 from uuid import uuid4
@@ -24,7 +25,11 @@ from yt_searchapi.classifier import (
     RelevanceDecision,
     VideoCandidate,
 )
-from yt_searchapi.client import SearchApiClient, SearchApiError
+from yt_searchapi.client import (
+    SearchApiClient,
+    SearchApiError,
+    is_retryable_searchapi_error,
+)
 from yt_searchapi.dates import (
     is_on_or_after_start_date,
     parse_publication_date,
@@ -62,7 +67,11 @@ from yt_searchapi.records import (
     VideoCandidateRecord,
 )
 from yt_searchapi.runtime_events import RuntimeEvent, RuntimeEventCallback
-from yt_searchapi.settings import DEFAULT_LLM_WORKERS, DEFAULT_SEARCHAPI_WORKERS
+from yt_searchapi.settings import (
+    DEFAULT_LLM_WORKERS,
+    DEFAULT_SEARCHAPI_RETRIES,
+    DEFAULT_SEARCHAPI_WORKERS,
+)
 from yt_searchapi.state import (
     BudgetState,
     CrawlProjectState,
@@ -89,6 +98,7 @@ class CrawlConfig:
     gl: str = "us"
     hl: str | None = None
     searchapi_timeout_seconds: float = 90.0
+    searchapi_retries: int = DEFAULT_SEARCHAPI_RETRIES
     searchapi_workers: int = DEFAULT_SEARCHAPI_WORKERS
     llm_workers: int = DEFAULT_LLM_WORKERS
 
@@ -110,6 +120,8 @@ class CrawlConfig:
             raise ValueError("hl must not be blank when supplied")
         if self.searchapi_timeout_seconds <= 0:
             raise ValueError("searchapi_timeout_seconds must be greater than zero")
+        if not 0 <= self.searchapi_retries <= 5:
+            raise ValueError("searchapi_retries must be between 0 and 5")
         if self.searchapi_workers < 1:
             raise ValueError("searchapi_workers must be at least 1")
         if self.llm_workers < 1:
@@ -526,10 +538,10 @@ class ResearchCrawler:
                     )
                 )
             self._save_state("running")
-        if first_error is not None:
-            raise first_error
         if blocked is not None:
             raise blocked
+        if first_error is not None:
+            raise first_error
 
     def _extract_search_results(
         self, response: Any, query: str, request_id: str | None
@@ -637,10 +649,10 @@ class ResearchCrawler:
         self._save_state("running")
         if self._pending_transcript_contexts:
             self._process_pending_transcript_batch()
-        if first_error is not None:
-            raise first_error
         if blocked is not None:
             raise blocked
+        if first_error is not None:
+            raise first_error
 
     def _prepare_metadata_classification(
         self,
@@ -812,13 +824,7 @@ class ResearchCrawler:
             }
             self._save_state("running")
             if not defer_transcript:
-                self._continue_transcript(
-                    item.discovered,
-                    item.detail,
-                    item.candidate,
-                    item.transcript_name,
-                    metadata_result=result,
-                )
+                self._process_pending_transcript_batch()
         return first_error
 
     def _process_video(
@@ -834,12 +840,7 @@ class ResearchCrawler:
         if pending_context is not None:
             if defer_transcript:
                 return
-            self._continue_transcript(
-                discovered,
-                youtube_video.SearchResponse.model_validate(pending_context["detail"]),
-                VideoCandidate.model_validate(pending_context["candidate"]),
-                str(pending_context["transcript_name"]),
-            )
+            self._process_pending_transcript_batch()
             return
         self._progress("video", f"Inspecting {discovered.title}")
 
@@ -890,95 +891,6 @@ class ResearchCrawler:
             )
             if first_error is not None:
                 raise first_error
-
-    def _continue_transcript(
-        self,
-        discovered: _DiscoveredVideo,
-        detail: youtube_video.SearchResponse,
-        llm_candidate: VideoCandidate,
-        transcript_name: str,
-        *,
-        metadata_result: Any | None = None,
-    ) -> None:
-        """Continue a checkpointed candidate from transcript collection onward."""
-
-        transcript_request = {
-            "video_id": discovered.video_id,
-            "lang": self.config.language,
-            "transcript_name": transcript_name,
-            "only_available": False,
-        }
-        transcript_cached = self._is_searchapi_cached(
-            "youtube_transcripts", transcript_request
-        )
-        saved_transcript = self._saved_transcript(discovered.video_id)
-        reservation = self.search_budget.pending_transcript(discovered.video_id)
-        if saved_transcript is None:
-            context = self._pending_transcript_contexts[discovered.video_id]
-            # A checkpoint with a dispatched reservation has an ambiguous
-            # provider outcome: the request may have reached SearchAPI before
-            # the process stopped. Conservatively commit that attempt, then
-            # budget the retry independently. Older checkpoints predate the
-            # marker but used the same checkpoint-before-dispatch boundary, so
-            # a missing marker is treated as dispatched.
-            if reservation is not None and context.get(
-                "transcript_dispatch_pending", True
-            ):
-                snapshot = self.search_budget.charge_failed_transcript(reservation)
-                context["transcript_dispatch_pending"] = False
-                self._save_state("running")
-                self.writer.append(
-                    BudgetEventRecord(
-                        run_id=self.writer.run_id,
-                        budget_kind=BudgetKind.SEARCH_API_CREDITS,
-                        pool="transcript",
-                        action=BudgetAction.RECONCILED,
-                        amount=reservation.credits,
-                        remaining=snapshot.transcript_remaining,
-                        reservation_id=reservation.reservation_id,
-                        purpose=f"transcript:{discovered.video_id}:interrupted",
-                    )
-                )
-                reservation = None
-            if reservation is None:
-                reservation = self.search_budget.mark_relevant(
-                    discovered.video_id,
-                    transcript_credits=0 if transcript_cached else 1,
-                )
-                self._record_transcript_reservation(reservation)
-            # Persist both the fresh attempt and the continuation immediately
-            # before entering the provider. If execution stops after this
-            # checkpoint, resume treats this one attempt as potentially billed.
-            context["transcript_dispatch_pending"] = True
-            self._save_state("running")
-            self._record_pending_metadata_decision(
-                discovered.video_id, metadata_result=metadata_result
-            )
-            transcript = self._fetch_transcript(
-                discovered.video_id,
-                transcript_name,
-                reservation,
-                cache_hit=transcript_cached,
-            )
-        else:
-            transcript = saved_transcript
-        if transcript is None:
-            self._pending_transcript_contexts.pop(discovered.video_id, None)
-            self._save_state("running")
-            return
-
-        first_error = self._classify_transcript_batch(
-            [
-                _TranscriptClassification(
-                    discovered=discovered,
-                    detail=detail,
-                    candidate=llm_candidate,
-                    transcript=transcript,
-                )
-            ]
-        )
-        if first_error is not None:
-            raise first_error
 
     def _classify_transcript_batch(
         self, work: list[_TranscriptClassification]
@@ -1165,7 +1077,7 @@ class ResearchCrawler:
                     blocked = exc
                     break
                 self._record_transcript_reservation(reservation)
-            context["transcript_dispatch_pending"] = True
+            context["transcript_dispatch_pending"] = False
             self._save_state("running")
             self._record_pending_metadata_decision(video_id)
             work.append(
@@ -1186,7 +1098,74 @@ class ResearchCrawler:
             if blocked is not None:
                 raise blocked
             return
+        final_errors: dict[str, Exception] = {}
+        pending = work
+        for attempt in range(self.config.searchapi_retries + 1):
+            if attempt:
+                self._sleep_before_searchapi_retry("youtube_transcripts", attempt)
+            responses, starts = self._dispatch_transcript_batch(pending)
+            retry_work: list[_TranscriptDispatch] = []
+            for item, response, started in zip(pending, responses, starts, strict=True):
+                video_id = item.discovered.video_id
+                try:
+                    transcript = self._apply_transcript_result(
+                        item,
+                        response,
+                        started=started,
+                    )
+                except Exception as exc:
+                    final_errors[video_id] = exc
+                    if (
+                        attempt < self.config.searchapi_retries
+                        and blocked is None
+                        and is_retryable_searchapi_error(exc)
+                    ):
+                        try:
+                            retry_work.append(self._prepare_transcript_retry(item))
+                        except BudgetExceededError as budget_exc:
+                            blocked = budget_exc
+                    continue
+                final_errors.pop(video_id, None)
+                if transcript is None:
+                    self._pending_transcript_contexts.pop(video_id, None)
+                    self._save_state("running")
+                    continue
+                classifications.append(
+                    _TranscriptClassification(
+                        discovered=item.discovered,
+                        detail=item.detail,
+                        candidate=item.candidate,
+                        transcript=transcript,
+                    )
+                )
+            if not retry_work:
+                break
+            logger.warning(
+                "Retrying {} failed transcript request(s) retry={}/{}",
+                len(retry_work),
+                attempt + 1,
+                self.config.searchapi_retries,
+            )
+            pending = retry_work
+        classification_error = self._classify_transcript_batch(classifications)
+        if blocked is not None:
+            raise blocked
+        if final_errors:
+            raise next(iter(final_errors.values()))
+        if classification_error is not None:
+            raise classification_error
+
+    def _dispatch_transcript_batch(
+        self, work: list[_TranscriptDispatch]
+    ) -> tuple[list[Any | Exception], list[float]]:
         self._progress("transcript", f"Collecting {len(work)} transcripts")
+        for item in work:
+            self._pending_transcript_contexts[item.discovered.video_id][
+                "transcript_dispatch_pending"
+            ] = True
+        # This is the checkpoint-before-provider boundary. An interruption after
+        # it is conservatively treated as a potentially billed dispatch.
+        self._save_state("running")
         starts = [time.perf_counter() for _item in work]
         for item in work:
             self._emit_api_event(
@@ -1198,12 +1177,13 @@ class ResearchCrawler:
                 )
             )
         try:
-            responses = list(
-                self.searchapi.transcripts(
-                    [item.request for item in work],
-                    return_exceptions=True,
+            requests = [item.request for item in work]
+            if len(requests) == 1:
+                responses = list(self.searchapi.transcripts(requests))
+            else:
+                responses = list(
+                    self.searchapi.transcripts(requests, return_exceptions=True)
                 )
-            )
         except Exception as exc:
             responses = [exc for _item in work]
         if len(responses) != len(work):
@@ -1211,37 +1191,22 @@ class ResearchCrawler:
                 "youtube_transcripts returned an unexpected batch size"
             )
             responses = [mismatch for _item in work]
-        first_error: Exception | None = None
-        for item, response, started in zip(work, responses, starts, strict=True):
-            try:
-                transcript = self._apply_transcript_result(
-                    item,
-                    response,
-                    started=started,
-                )
-            except Exception as exc:
-                if first_error is None:
-                    first_error = exc
-                continue
-            if transcript is None:
-                self._pending_transcript_contexts.pop(item.discovered.video_id, None)
-                self._save_state("running")
-                continue
-            classifications.append(
-                _TranscriptClassification(
-                    discovered=item.discovered,
-                    detail=item.detail,
-                    candidate=item.candidate,
-                    transcript=transcript,
-                )
-            )
-        classification_error = self._classify_transcript_batch(classifications)
-        if first_error is None:
-            first_error = classification_error
-        if first_error is not None:
-            raise first_error
-        if blocked is not None:
-            raise blocked
+        return responses, starts
+
+    def _prepare_transcript_retry(
+        self, item: _TranscriptDispatch
+    ) -> _TranscriptDispatch:
+        video_id = item.discovered.video_id
+        cache_hit = self._is_searchapi_cached("youtube_transcripts", item.request)
+        reservation = self.search_budget.mark_relevant(
+            video_id, transcript_credits=0 if cache_hit else 1
+        )
+        self._record_transcript_reservation(reservation)
+        self._pending_transcript_contexts[video_id]["transcript_dispatch_pending"] = (
+            False
+        )
+        self._save_state("running")
+        return replace(item, reservation=reservation, cache_hit=cache_hit)
 
     def _apply_transcript_result(
         self,
@@ -1392,175 +1357,6 @@ class ResearchCrawler:
         self._save_state("running")
         return record
 
-    def _fetch_transcript(
-        self,
-        video_id: str,
-        transcript_name: str,
-        reservation: TranscriptCreditReservation,
-        *,
-        cache_hit: bool = False,
-    ) -> TranscriptRecord | None:
-        existing = self._saved_transcript(video_id)
-        if existing is not None:
-            return existing
-        self._progress("transcript", f"Collecting transcript for {video_id}")
-        self._emit_api_event(
-            RuntimeEvent(
-                provider="searchapi",
-                operation="youtube_transcripts",
-                phase="started",
-                cache_hit=cache_hit,
-            )
-        )
-        started = time.perf_counter()
-        try:
-            response = self.searchapi.transcripts(
-                [
-                    {
-                        "video_id": video_id,
-                        "lang": self.config.language,
-                        "transcript_name": transcript_name,
-                        "only_available": False,
-                    }
-                ]
-            )[0]
-        except Exception as exc:
-            snapshot = self.search_budget.charge_failed_transcript(reservation)
-            self._pending_transcript_contexts[video_id][
-                "transcript_dispatch_pending"
-            ] = False
-            self._save_state("running")
-            self.writer.append(
-                ApiCallRecord(
-                    run_id=self.writer.run_id,
-                    provider="searchapi",
-                    operation="youtube_transcripts",
-                    status="error",
-                    searchapi_credits=reservation.credits,
-                    latency_seconds=time.perf_counter() - started,
-                    error=str(exc),
-                )
-            )
-            self._emit_api_event(
-                RuntimeEvent(
-                    provider="searchapi",
-                    operation="youtube_transcripts",
-                    phase="finished",
-                    status="error",
-                    cache_hit=cache_hit,
-                    error=str(exc),
-                )
-            )
-            self.writer.append(
-                BudgetEventRecord(
-                    run_id=self.writer.run_id,
-                    budget_kind=BudgetKind.SEARCH_API_CREDITS,
-                    pool="transcript",
-                    action=BudgetAction.RECONCILED,
-                    amount=reservation.credits,
-                    remaining=snapshot.transcript_remaining,
-                    reservation_id=reservation.reservation_id,
-                    purpose=f"transcript:{video_id}:error",
-                )
-            )
-            self._record_error("transcript", exc, video_id=video_id)
-            self._record_error_disposition(
-                video_id,
-                "transcript_request_error",
-                point=DecisionPoint.TRANSCRIPT,
-                transcript_reserved=True,
-                terminal=False,
-            )
-            raise
-
-        snapshot = self.search_budget.reconcile_transcript(
-            reservation, actual_credits=reservation.credits
-        )
-        self._pending_transcript_contexts[video_id]["transcript_dispatch_pending"] = (
-            False
-        )
-        self._save_state("running")
-        request_id = _request_id(response)
-        segments = tuple(
-            TranscriptSegment(
-                text=segment.text or "",
-                start_seconds=max(0.0, float(segment.start or 0.0)),
-                duration_seconds=max(0.0, float(segment.duration or 0.0)),
-            )
-            for segment in response.transcripts or []
-            if segment.text
-        )
-        available = bool(segments) and not response.error
-        unavailable_reason = (
-            None if available else (response.error or "empty_transcript")
-        )
-        api_status = "cache_hit" if cache_hit else ("success" if available else "error")
-        self.writer.append(
-            ApiCallRecord(
-                run_id=self.writer.run_id,
-                provider="searchapi",
-                operation="youtube_transcripts",
-                request_id=request_id,
-                status=api_status,
-                searchapi_credits=reservation.credits,
-                latency_seconds=time.perf_counter() - started,
-                error=unavailable_reason,
-            )
-        )
-        self._emit_api_event(
-            RuntimeEvent(
-                provider="searchapi",
-                operation="youtube_transcripts",
-                phase="finished",
-                status=api_status,
-                cache_hit=cache_hit,
-                error=unavailable_reason,
-            )
-        )
-        self.writer.append(
-            BudgetEventRecord(
-                run_id=self.writer.run_id,
-                budget_kind=BudgetKind.SEARCH_API_CREDITS,
-                pool="transcript",
-                action=BudgetAction.RECONCILED,
-                amount=reservation.credits,
-                remaining=snapshot.transcript_remaining,
-                reservation_id=reservation.reservation_id,
-                purpose=f"transcript:{video_id}",
-            )
-        )
-        record = TranscriptRecord(
-            run_id=self.writer.run_id,
-            video_id=video_id,
-            requested_language=self.config.language,
-            language=self.config.language if available else None,
-            transcript_type=None,
-            is_available=available,
-            unavailable_reason=unavailable_reason,
-            segments=segments,
-            source_request_id=request_id,
-            searchapi_credits=reservation.credits,
-        )
-        self.writer.append(record)
-        if not available:
-            self._unavailable_transcript_ids.add(video_id)
-            self._record_error(
-                "transcript",
-                RuntimeError(unavailable_reason or "transcript unavailable"),
-                video_id=video_id,
-            )
-            self._record_error_disposition(
-                video_id,
-                "transcript_response_error" if response.error else "empty_transcript",
-                point=DecisionPoint.TRANSCRIPT,
-                transcript_reserved=True,
-            )
-            return None
-        self._transcript_ids.add(video_id)
-        self._unavailable_transcript_ids.discard(video_id)
-        self._save_state("running")
-        return record
-
     def _load_unavailable_transcript_ids(self) -> set[str]:
         """Restore latest confirmed transcript availability from the audit stream."""
 
@@ -1635,10 +1431,10 @@ class ResearchCrawler:
                     first_error = result
                 continue
             self._apply_channel_response(channel, result)
-        if first_error is not None:
-            raise first_error
         if blocked is not None:
             raise blocked
+        if first_error is not None:
+            raise first_error
 
     def _expand_channel(self, channel: _DiscoveredChannel) -> None:
         if not channel.channel_id or channel.depth > self.config.max_depth:
@@ -1875,6 +1671,37 @@ class ResearchCrawler:
         request: dict[str, object],
         call: Callable[[], Any],
     ) -> Any:
+        """Run one discovery request with separately budgeted retry attempts."""
+
+        for attempt in range(self.config.searchapi_retries + 1):
+            if attempt:
+                self._sleep_before_searchapi_retry(operation, attempt)
+            try:
+                return self._discovery_attempt(operation, engine, request, call)
+            except BudgetExceededError:
+                raise
+            except Exception as exc:
+                if (
+                    attempt >= self.config.searchapi_retries
+                    or not is_retryable_searchapi_error(exc)
+                ):
+                    raise
+                logger.warning(
+                    "Retrying SearchAPI operation={} after error_type={} retry={}/{}",
+                    operation,
+                    type(exc).__name__,
+                    attempt + 1,
+                    self.config.searchapi_retries,
+                )
+        raise AssertionError("unreachable SearchAPI retry loop")
+
+    def _discovery_attempt(
+        self,
+        operation: str,
+        engine: str,
+        request: dict[str, object],
+        call: Callable[[], Any],
+    ) -> Any:
         cache_hit = self._is_searchapi_cached(engine, request)
         if cache_hit:
             snapshot = self.search_budget.snapshot()
@@ -1959,7 +1786,55 @@ class ResearchCrawler:
         requests: list[dict[str, object]],
         call: Callable[[list[dict[str, object]]], list[Any]],
     ) -> tuple[list[Any | Exception], BudgetExceededError | None]:
-        """Pre-charge a bounded batch, dispatch it, and audit results in input order."""
+        """Retry only failed batch members, charging every provider attempt."""
+
+        outcomes: list[Any | Exception | None] = [None] * len(requests)
+        pending_indices = list(range(len(requests)))
+        blocked: BudgetExceededError | None = None
+        for attempt in range(self.config.searchapi_retries + 1):
+            if attempt:
+                self._sleep_before_searchapi_retry(operation, attempt)
+            attempted, attempt_blocked = self._discovery_batch_attempt(
+                operation,
+                engine,
+                [requests[index] for index in pending_indices],
+                call,
+            )
+            attempted_indices = pending_indices[: len(attempted)]
+            for index, result in zip(attempted_indices, attempted, strict=True):
+                outcomes[index] = result
+            if attempt_blocked is not None:
+                blocked = attempt_blocked
+                break
+            pending_indices = [
+                index
+                for index in attempted_indices
+                if isinstance(outcomes[index], Exception)
+                and is_retryable_searchapi_error(outcomes[index])
+            ]
+            if not pending_indices:
+                break
+            if attempt < self.config.searchapi_retries:
+                logger.warning(
+                    "Retrying {} failed SearchAPI batch item(s) operation={} "
+                    "retry={}/{}",
+                    len(pending_indices),
+                    operation,
+                    attempt + 1,
+                    self.config.searchapi_retries,
+                )
+
+        completed = [result for result in outcomes if result is not None]
+        return completed, blocked
+
+    def _discovery_batch_attempt(
+        self,
+        operation: str,
+        engine: str,
+        requests: list[dict[str, object]],
+        call: Callable[[list[dict[str, object]]], list[Any]],
+    ) -> tuple[list[Any | Exception], BudgetExceededError | None]:
+        """Pre-charge, dispatch, and audit one bounded batch attempt."""
 
         prepared: list[dict[str, object]] = []
         cache_hits: list[bool] = []
@@ -2046,6 +1921,16 @@ class ResearchCrawler:
                 )
             )
         return results, blocked
+
+    def _sleep_before_searchapi_retry(self, operation: str, retry: int) -> None:
+        maximum = min(30.0, float(2 ** (retry - 1)))
+        delay = random.uniform(maximum / 2, maximum)
+        self._progress(
+            "retry",
+            f"Retrying {operation} in {delay:.1f}s "
+            f"({retry}/{self.config.searchapi_retries})",
+        )
+        time.sleep(delay)
 
     def _is_searchapi_cached(self, engine: str, request: dict[str, object]) -> bool:
         checker = getattr(self.searchapi, "is_cached", None)
@@ -2253,6 +2138,7 @@ class ResearchCrawler:
                 exception_type=type(exc).__name__,
                 video_id=video_id,
                 channel_id=channel_id,
+                retryable=is_retryable_searchapi_error(exc),
             )
         )
 
@@ -2390,6 +2276,7 @@ class ResearchCrawler:
             gl=self.config.gl,
             hl=self.config.interface_language,
             searchapi_timeout_seconds=self.config.searchapi_timeout_seconds,
+            searchapi_retries=self.config.searchapi_retries,
             searchapi_workers=self.config.searchapi_workers,
             llm_workers=self.config.llm_workers,
             transcript_excerpt_chars=self.config.transcript_excerpt_chars,

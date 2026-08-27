@@ -107,6 +107,21 @@ class SearchApiError(Exception):
         super().__init__(f"{status_code}: {message}")
 
 
+def is_retryable_searchapi_error(exc: BaseException) -> bool:
+    """Return whether a failed SearchAPI operation is safe to try again."""
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, httpx.TransportError | TimeoutError | ConnectionError):
+            return True
+        if isinstance(current, SearchApiError):
+            return _is_retryable_status(current.status_code)
+        current = current.__cause__ or current.__context__
+    return False
+
+
 class SearchApiClient:
     """Typed client over SearchAPI YouTube engines on GET /search."""
 

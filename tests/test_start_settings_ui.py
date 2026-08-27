@@ -4,7 +4,11 @@ from collections import deque
 from pathlib import Path
 
 from yt_searchapi.interview_ui import PromptChoice
-from yt_searchapi.settings import DEFAULT_LLM_WORKERS, DEFAULT_SEARCHAPI_WORKERS
+from yt_searchapi.settings import (
+    DEFAULT_LLM_WORKERS,
+    DEFAULT_SEARCHAPI_RETRIES,
+    DEFAULT_SEARCHAPI_WORKERS,
+)
 from yt_searchapi.start_settings_ui import (
     BASE_START_SETTING_QUESTIONS,
     collect_missing_start_settings,
@@ -108,14 +112,24 @@ def test_explicit_falsy_values_are_not_treated_as_missing() -> None:
     assert prompts.calls == []
 
 
-def test_extra_timeout_and_parallelism_questions_are_schema_driven() -> None:
-    prompts = TextOnlyPrompts(["30.5", "6", str(DEFAULT_LLM_WORKERS)])
+def test_extra_timeout_retry_and_parallelism_questions_are_schema_driven() -> None:
+    prompts = TextOnlyPrompts(
+        ["30.5", str(DEFAULT_SEARCHAPI_RETRIES), "6", str(DEFAULT_LLM_WORKERS)]
+    )
     questions = (
         float_setting(
             "searchapi_timeout",
             "SearchAPI timeout?",
             "Seconds.",
             default=90,
+        ),
+        integer_setting(
+            "searchapi_retries",
+            "SearchAPI retries?",
+            "Retries.",
+            minimum=0,
+            maximum=5,
+            default=DEFAULT_SEARCHAPI_RETRIES,
         ),
         integer_setting(
             "searchapi_workers",
@@ -141,6 +155,7 @@ def test_extra_timeout_and_parallelism_questions_are_schema_driven() -> None:
 
     assert result == {
         "searchapi_timeout": 30.5,
+        "searchapi_retries": DEFAULT_SEARCHAPI_RETRIES,
         "searchapi_workers": 6,
         "llm_workers": DEFAULT_LLM_WORKERS,
     }

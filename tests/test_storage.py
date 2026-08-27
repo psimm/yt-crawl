@@ -21,7 +21,11 @@ from yt_searchapi.records import (
     TranscriptSegment,
     validate_run_record,
 )
-from yt_searchapi.settings import DEFAULT_LLM_WORKERS, DEFAULT_SEARCHAPI_WORKERS
+from yt_searchapi.settings import (
+    DEFAULT_LLM_WORKERS,
+    DEFAULT_SEARCHAPI_RETRIES,
+    DEFAULT_SEARCHAPI_WORKERS,
+)
 from yt_searchapi.storage import JsonlRunWriter, RunIdMismatchError
 
 
@@ -56,6 +60,7 @@ def test_run_config_uses_configured_parallelism_defaults() -> None:
     record = config_record()
 
     assert record.searchapi_workers == DEFAULT_SEARCHAPI_WORKERS
+    assert record.searchapi_retries == DEFAULT_SEARCHAPI_RETRIES
     assert record.llm_workers == DEFAULT_LLM_WORKERS
 
 

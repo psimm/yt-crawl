@@ -12,7 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from yt_searchapi.classifier import RelevanceDecision
 from yt_searchapi.prompts import CLASSIFIER_PROMPT_VERSION
-from yt_searchapi.settings import DEFAULT_LLM_WORKERS, DEFAULT_SEARCHAPI_WORKERS
+from yt_searchapi.settings import (
+    DEFAULT_LLM_WORKERS,
+    DEFAULT_SEARCHAPI_RETRIES,
+    DEFAULT_SEARCHAPI_WORKERS,
+)
 
 LEGACY_CLASSIFIER_PROMPT_VERSION = "relevance-v1"
 
@@ -67,6 +71,7 @@ class CrawlProjectState(StateModel):
     gl: str
     hl: str
     searchapi_timeout_seconds: float = Field(default=90.0, gt=0)
+    searchapi_retries: int = Field(default=DEFAULT_SEARCHAPI_RETRIES, ge=0, le=5)
     searchapi_workers: int = Field(default=DEFAULT_SEARCHAPI_WORKERS, ge=1)
     llm_workers: int = Field(default=DEFAULT_LLM_WORKERS, ge=1)
     transcript_excerpt_chars: int

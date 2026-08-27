@@ -837,6 +837,9 @@ def _query_config(connection: duckdb.DuckDBPyConnection) -> dict[str, Any]:
                 AS max_search_pages,
             try_cast(json_extract_string(payload, '$.max_channel_pages') AS BIGINT)
                 AS max_channel_pages,
+            coalesce(try_cast(
+                json_extract_string(payload, '$.searchapi_retries') AS BIGINT
+            ), 0) AS searchapi_retries,
             json_extract_string(payload, '$.model') AS model,
             json_extract_string(payload, '$.prompt_version') AS prompt_version,
             json_extract_string(payload, '$.prompt_sha256') AS prompt_sha256
@@ -861,6 +864,7 @@ def _query_config(connection: duckdb.DuckDBPyConnection) -> dict[str, Any]:
         "max_queries": 8,
         "max_search_pages": 1,
         "max_channel_pages": 1,
+        "searchapi_retries": 0,
         "model": None,
         "prompt_version": None,
         "prompt_sha256": None,
@@ -1134,7 +1138,10 @@ def _query_sessions(
             try_cast(json_extract_string(payload, '$.max_search_pages') AS BIGINT)
                 AS max_search_pages,
             try_cast(json_extract_string(payload, '$.max_channel_pages') AS BIGINT)
-                AS max_channel_pages
+                AS max_channel_pages,
+            coalesce(try_cast(
+                json_extract_string(payload, '$.searchapi_retries') AS BIGINT
+            ), 0) AS searchapi_retries
         FROM records
         WHERE record_type = 'run_config'
           AND coalesce(

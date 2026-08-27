@@ -26,7 +26,11 @@ from yt_searchapi.crawler import CrawlSummary
 from yt_searchapi.llm_runtime import StructuredOutputError
 from yt_searchapi.prompts import CLASSIFIER_PROMPT_VERSION
 from yt_searchapi.records import RunStatus
-from yt_searchapi.settings import DEFAULT_LLM_WORKERS, DEFAULT_SEARCHAPI_WORKERS
+from yt_searchapi.settings import (
+    DEFAULT_LLM_WORKERS,
+    DEFAULT_SEARCHAPI_RETRIES,
+    DEFAULT_SEARCHAPI_WORKERS,
+)
 from yt_searchapi.start_settings_ui import collect_missing_start_settings
 from yt_searchapi.state import (
     BudgetState,
@@ -67,6 +71,7 @@ def _use_noninteractive_start_defaults(monkeypatch) -> None:
         "gl": "us",
         "hl": "en",
         "searchapi_timeout": 90.0,
+        "searchapi_retries": DEFAULT_SEARCHAPI_RETRIES,
         "searchapi_workers": DEFAULT_SEARCHAPI_WORKERS,
         "llm_workers": DEFAULT_LLM_WORKERS,
     }
@@ -118,6 +123,7 @@ def test_checkpoint_uses_configured_parallelism_defaults(tmp_path) -> None:
     state = _checkpoint(tmp_path / "default-workers")
 
     assert state.searchapi_workers == DEFAULT_SEARCHAPI_WORKERS
+    assert state.searchapi_retries == DEFAULT_SEARCHAPI_RETRIES
     assert state.llm_workers == DEFAULT_LLM_WORKERS
 
 
@@ -227,11 +233,13 @@ def test_start_without_flags_routes_every_setting_through_interview(
         "gl",
         "hl",
         "searchapi_timeout",
+        "searchapi_retries",
         "searchapi_workers",
         "llm_workers",
     }
     assert all(value is None for value in captured.values())
     assert question_defaults["searchapi_workers"] == str(DEFAULT_SEARCHAPI_WORKERS)
+    assert question_defaults["searchapi_retries"] == str(DEFAULT_SEARCHAPI_RETRIES)
     assert question_defaults["llm_workers"] == str(DEFAULT_LLM_WORKERS)
 
 
@@ -285,6 +293,8 @@ def test_fully_scripted_start_does_not_open_setting_prompts(
             "de-DE",
             "--searchapi-timeout",
             "30",
+            "--searchapi-retries",
+            "2",
             "--searchapi-workers",
             "6",
             "--llm-workers",
@@ -295,6 +305,7 @@ def test_fully_scripted_start_does_not_open_setting_prompts(
     assert result.exit_code == 2
     assert captured["hl"] == "de-DE"
     assert captured["searchapi_timeout"] == 30.0
+    assert captured["searchapi_retries"] == 2
     assert captured["searchapi_workers"] == 6
     assert captured["llm_workers"] == 3
 
@@ -1388,6 +1399,7 @@ def test_resume_commits_grant_and_controls_before_provider_setup(
         committed = ProjectStateStore(project).load()
         assert committed.budget.max_credits == 8
         assert committed.max_queries == 3
+        assert committed.searchapi_retries == 1
         assert committed.searchapi_workers == DEFAULT_SEARCHAPI_WORKERS - 1
         assert committed.llm_workers == DEFAULT_LLM_WORKERS + 1
         assert committed.last_status == "prepared"
@@ -1395,6 +1407,7 @@ def test_resume_commits_grant_and_controls_before_provider_setup(
         assert '"session_action":"resume"' in audit
         assert '"max_searchapi_credits":8' in audit
         assert '"max_queries":3' in audit
+        assert '"searchapi_retries":1' in audit
         assert f'"searchapi_workers":{DEFAULT_SEARCHAPI_WORKERS - 1}' in audit
         assert f'"llm_workers":{DEFAULT_LLM_WORKERS + 1}' in audit
         raise RuntimeError("provider setup failed")
@@ -1410,6 +1423,8 @@ def test_resume_commits_grant_and_controls_before_provider_setup(
             "4",
             "--max-queries",
             "3",
+            "--searchapi-retries",
+            "1",
             "--searchapi-workers",
             str(DEFAULT_SEARCHAPI_WORKERS - 1),
             "--llm-workers",
@@ -1558,9 +1573,11 @@ def test_plan_summaries_are_compact_and_show_only_resume_changes(tmp_path) -> No
             "max_channel_pages": 1,
         },
         searchapi_workers=DEFAULT_SEARCHAPI_WORKERS - 1,
+        searchapi_retries=1,
         llm_workers=DEFAULT_LLM_WORKERS + 1,
     ) == (
         "Resume plan · grant +0 → 4 · frontier unchanged · "
+        f"SearchAPI retries {DEFAULT_SEARCHAPI_RETRIES} → 1 · "
         f"SearchAPI workers {DEFAULT_SEARCHAPI_WORKERS} → "
         f"{DEFAULT_SEARCHAPI_WORKERS - 1} · OpenAI workers "
         f"{DEFAULT_LLM_WORKERS} → {DEFAULT_LLM_WORKERS + 1}"

@@ -17,7 +17,11 @@ from pydantic import (
     model_validator,
 )
 
-from yt_searchapi.settings import DEFAULT_LLM_WORKERS, DEFAULT_SEARCHAPI_WORKERS
+from yt_searchapi.settings import (
+    DEFAULT_LLM_WORKERS,
+    DEFAULT_SEARCHAPI_RETRIES,
+    DEFAULT_SEARCHAPI_WORKERS,
+)
 
 SCHEMA_VERSION = "1"
 
@@ -133,6 +137,7 @@ class RunConfigRecord(RunRecordBase):
     gl: str = Field(default="us", min_length=1)
     hl: str = Field(default="en", min_length=1)
     searchapi_timeout_seconds: float = Field(default=90.0, gt=0)
+    searchapi_retries: int = Field(default=DEFAULT_SEARCHAPI_RETRIES, ge=0, le=5)
     searchapi_workers: int = Field(default=DEFAULT_SEARCHAPI_WORKERS, ge=1)
     llm_workers: int = Field(default=DEFAULT_LLM_WORKERS, ge=1)
     model: str = Field(min_length=1)

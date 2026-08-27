@@ -60,6 +60,7 @@ from yt_searchapi.records import (
 from yt_searchapi.run_tui import RunDashboard
 from yt_searchapi.settings import (
     DEFAULT_LLM_WORKERS,
+    DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
     Settings,
 )
@@ -170,6 +171,15 @@ def start(
             help="Per-request SearchAPI timeout in seconds.",
         ),
     ] = None,
+    searchapi_retries: Annotated[
+        int | None,
+        typer.Option(
+            "--searchapi-retries",
+            min=0,
+            max=5,
+            help="Additional budgeted attempts for transient SearchAPI failures.",
+        ),
+    ] = None,
     searchapi_workers: Annotated[
         int | None,
         typer.Option(
@@ -197,6 +207,14 @@ def start(
             "How long may one SearchAPI request wait?",
             "Enter seconds before a stalled request is stopped.",
             default=90,
+        ),
+        integer_setting(
+            "searchapi_retries",
+            "How many times may a transient SearchAPI failure be retried?",
+            "Choose between 0 and 5. Every dispatched retry uses another credit.",
+            minimum=0,
+            maximum=5,
+            default=DEFAULT_SEARCHAPI_RETRIES,
         ),
         integer_setting(
             "searchapi_workers",
@@ -230,6 +248,7 @@ def start(
                 "gl": gl,
                 "hl": hl,
                 "searchapi_timeout": searchapi_timeout,
+                "searchapi_retries": searchapi_retries,
                 "searchapi_workers": searchapi_workers,
                 "llm_workers": llm_workers,
             },
@@ -255,6 +274,7 @@ def start(
     gl = str(resolved["gl"]).strip().lower()
     hl = str(resolved["hl"]).strip()
     searchapi_timeout = float(resolved["searchapi_timeout"])
+    searchapi_retries = int(resolved["searchapi_retries"])
     searchapi_workers = int(resolved["searchapi_workers"])
     llm_workers = int(resolved["llm_workers"])
     project = Path(resolved["project"]).expanduser().resolve()
@@ -299,7 +319,8 @@ def start(
             f"Transcript reserve: {transcript_reserve} credits\n"
             "Controls: "
             f"depth={max_depth}, queries={max_queries}, "
-            f"search pages={max_search_pages}, channel pages={max_channel_pages}",
+            f"search pages={max_search_pages}, channel pages={max_channel_pages}, "
+            f"SearchAPI retries={searchapi_retries}",
             title="Interview",
         )
     )
@@ -344,6 +365,7 @@ def start(
             gl=gl,
             hl=hl,
             searchapi_timeout_seconds=searchapi_timeout,
+            searchapi_retries=searchapi_retries,
             searchapi_workers=searchapi_workers,
             llm_workers=llm_workers,
             dashboard=dashboard,
@@ -362,6 +384,7 @@ def start(
             gl=gl,
             hl=hl,
             searchapi_timeout_seconds=searchapi_timeout,
+            searchapi_retries=searchapi_retries,
             searchapi_workers=searchapi_workers,
             llm_workers=llm_workers,
         )
@@ -495,6 +518,15 @@ def resume(
             help="Increase pages allowed for each discovered channel.",
         ),
     ] = None,
+    searchapi_retries: Annotated[
+        int | None,
+        typer.Option(
+            "--searchapi-retries",
+            min=0,
+            max=5,
+            help="Set additional budgeted transient retries for this project.",
+        ),
+    ] = None,
     searchapi_workers: Annotated[
         int | None,
         typer.Option(
@@ -575,6 +607,9 @@ def resume(
     effective_searchapi_workers = (
         state.searchapi_workers if searchapi_workers is None else searchapi_workers
     )
+    effective_searchapi_retries = (
+        state.searchapi_retries if searchapi_retries is None else searchapi_retries
+    )
     effective_llm_workers = state.llm_workers if llm_workers is None else llm_workers
     if state.run_id != project.name:
         raise typer.BadParameter(
@@ -617,6 +652,7 @@ def resume(
         gl=state.gl,
         hl=state.hl,
         searchapi_timeout_seconds=state.searchapi_timeout_seconds,
+        searchapi_retries=effective_searchapi_retries,
         searchapi_workers=effective_searchapi_workers,
         llm_workers=effective_llm_workers,
         model=DEFAULT_LLM_MODEL,
@@ -635,12 +671,18 @@ def resume(
             f"start_date {state.start_date.isoformat()} → "
             f"{effective_start_date.isoformat()}"
         )
+    if effective_searchapi_retries != state.searchapi_retries:
+        changed_controls.append(
+            f"searchapi_retries {state.searchapi_retries} → "
+            f"{effective_searchapi_retries}"
+        )
     plan_summary = _resume_plan_summary(
         credits_added=add_credits,
         new_grant=new_grant,
         previous_state=state,
         controls=controls,
         start_date=effective_start_date,
+        searchapi_retries=effective_searchapi_retries,
         searchapi_workers=effective_searchapi_workers,
         llm_workers=effective_llm_workers,
     )
@@ -666,6 +708,7 @@ def resume(
             controls,
             start_date=effective_start_date,
             reopened_video_ids=reopened_video_ids,
+            searchapi_retries=effective_searchapi_retries,
             searchapi_workers=effective_searchapi_workers,
             llm_workers=effective_llm_workers,
         )
@@ -673,7 +716,8 @@ def resume(
         logger.info(
             "Resume funded project={} previous_grant={} added={} new_grant={} "
             "already_spent={} unused_before={} account_credits={} controls={} "
-            "searchapi_workers={} llm_workers={} reopened_videos={} changed={}",
+            "searchapi_retries={} searchapi_workers={} llm_workers={} "
+            "reopened_videos={} changed={}",
             project,
             previous_budget.max_credits,
             add_credits,
@@ -682,6 +726,7 @@ def resume(
             unused_before,
             account_credits,
             _format_controls(controls),
+            state.searchapi_retries,
             state.searchapi_workers,
             state.llm_workers,
             len(reopened_video_ids),
@@ -719,6 +764,7 @@ def resume(
             gl=state.gl,
             hl=state.hl,
             searchapi_timeout_seconds=state.searchapi_timeout_seconds,
+            searchapi_retries=state.searchapi_retries,
             searchapi_workers=state.searchapi_workers,
             llm_workers=state.llm_workers,
             **controls,
@@ -918,6 +964,7 @@ def _prepare_research(
     gl: str = "us",
     hl: str | None = None,
     searchapi_timeout_seconds: float = 90.0,
+    searchapi_retries: int = DEFAULT_SEARCHAPI_RETRIES,
     searchapi_workers: int = DEFAULT_SEARCHAPI_WORKERS,
     llm_workers: int = DEFAULT_LLM_WORKERS,
     dashboard: RunDashboard | None = None,
@@ -981,6 +1028,7 @@ def _prepare_research(
                 gl=gl,
                 hl=hl or confirmed.language_code,
                 searchapi_timeout_seconds=searchapi_timeout_seconds,
+                searchapi_retries=searchapi_retries,
                 searchapi_workers=searchapi_workers,
                 llm_workers=llm_workers,
                 model=DEFAULT_LLM_MODEL,
@@ -1200,6 +1248,7 @@ def _resume_plan_summary(
     previous_state: CrawlProjectState,
     controls: dict[str, int],
     start_date: date | None = None,
+    searchapi_retries: int | None = None,
     searchapi_workers: int | None = None,
     llm_workers: int | None = None,
 ) -> str:
@@ -1229,10 +1278,20 @@ def _resume_plan_summary(
         if searchapi_workers is None
         else searchapi_workers
     )
+    effective_searchapi_retries = (
+        previous_state.searchapi_retries
+        if searchapi_retries is None
+        else searchapi_retries
+    )
     effective_llm_workers = (
         previous_state.llm_workers if llm_workers is None else llm_workers
     )
     parallelism: list[str] = []
+    if effective_searchapi_retries != previous_state.searchapi_retries:
+        parallelism.append(
+            "SearchAPI retries "
+            f"{previous_state.searchapi_retries} → {effective_searchapi_retries}"
+        )
     if effective_searchapi_workers != previous_state.searchapi_workers:
         parallelism.append(
             "SearchAPI workers "
@@ -1311,6 +1370,7 @@ def _commit_resume_state(
     *,
     start_date: date | None = None,
     reopened_video_ids: set[str] | None = None,
+    searchapi_retries: int | None = None,
     searchapi_workers: int | None = None,
     llm_workers: int | None = None,
 ) -> CrawlProjectState:
@@ -1328,6 +1388,11 @@ def _commit_resume_state(
             ),
             "terminal_video_ids": sorted(set(state.terminal_video_ids) - reopened),
             "queued_video_ids": sorted(set(state.queued_video_ids) - reopened),
+            "searchapi_retries": (
+                state.searchapi_retries
+                if searchapi_retries is None
+                else searchapi_retries
+            ),
             "searchapi_workers": (
                 state.searchapi_workers
                 if searchapi_workers is None

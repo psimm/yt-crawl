@@ -191,6 +191,30 @@ class FailingTranscriptSearchApi(FakeSearchApi):
         raise TimeoutError("transcript outcome unknown")
 
 
+class FailOnceTranscriptSearchApi(FakeSearchApi):
+    def transcripts(self, requests):
+        self.transcript_calls += 1
+        if self.transcript_calls == 1:
+            raise httpx.ReadError("[Errno 54] Connection reset by peer")
+        return [
+            youtube_transcripts.SearchResponse(
+                transcripts=[
+                    youtube_transcripts.Transcript(
+                        text="A substantive discussion of the research topic.",
+                        start=0,
+                        duration=4,
+                    )
+                ]
+            )
+        ]
+
+
+class PermanentTranscriptFailureSearchApi(FakeSearchApi):
+    def transcripts(self, requests):
+        self.transcript_calls += 1
+        raise SearchApiError(400, "invalid transcript request")
+
+
 class UnavailableTranscriptSearchApi(FakeSearchApi):
     def __init__(self, *, error: str | None) -> None:
         super().__init__()
@@ -374,18 +398,21 @@ def make_crawler(
     tmp_path,
     api: FakeSearchApi,
     *,
+    config: CrawlConfig | None = None,
     on_api_event=None,
     search_budget: SearchApiCreditBudget | None = None,
     state_store: ProjectStateStore | None = None,
     resume_state=None,
 ) -> ResearchCrawler:
     return ResearchCrawler(
-        config=CrawlConfig(
+        config=config
+        or CrawlConfig(
             topic_query="research topic",
             language="en",
             start_date=date(2026, 1, 1),
             max_queries=2,
             max_depth=0,
+            searchapi_retries=0,
         ),
         expansion=TopicExpansion(
             topic_interpretation="Research topic",
@@ -637,10 +664,186 @@ def test_transcript_dispatch_error_is_charged_but_remains_retryable(
     assert "transcript:video-1:error" in budget_events
     assert '"label":"error"' in decisions
     assert not (tmp_path / "run-1" / "transcript.jsonl").exists()
+    errors = [
+        json.loads(line)
+        for line in (tmp_path / "run-1" / "run_error.jsonl").read_text().splitlines()
+    ]
+    assert {error["stage"] for error in errors} == {"transcript", "crawler"}
+    assert all(error["retryable"] is True for error in errors)
     assert sum(event.phase == "started" for event in runtime_events) == sum(
         event.phase == "finished" for event in runtime_events
     )
     assert runtime_events[-1].status == "error"
+
+
+def test_transient_transcript_failure_retries_and_charges_each_attempt(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr("yt_searchapi.crawler.time.sleep", lambda _delay: None)
+    api = FailOnceTranscriptSearchApi()
+    budget = SearchApiCreditBudget(5, 2)
+    config = CrawlConfig(
+        topic_query="research topic",
+        language="en",
+        start_date=date(2026, 1, 1),
+        max_queries=2,
+        max_depth=0,
+        searchapi_retries=1,
+    )
+
+    summary = make_crawler(tmp_path, api, config=config, search_budget=budget).run()
+
+    assert summary.status is RunStatus.COMPLETED
+    assert api.transcript_calls == 2
+    assert budget.snapshot().transcript_spent == 2
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "run-1" / "api_call.jsonl").read_text().splitlines()
+        if '"operation":"youtube_transcripts"' in line
+    ]
+    assert [row["status"] for row in rows] == ["error", "success"]
+    assert sum(row["searchapi_credits"] for row in rows) == 2
+
+
+def test_transcript_retry_exhaustion_fails_after_budgeted_attempts(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr("yt_searchapi.crawler.time.sleep", lambda _delay: None)
+    api = FailingTranscriptSearchApi()
+    budget = SearchApiCreditBudget(5, 2)
+    config = CrawlConfig(
+        topic_query="research topic",
+        language="en",
+        start_date=date(2026, 1, 1),
+        max_queries=2,
+        max_depth=0,
+        searchapi_retries=1,
+    )
+
+    summary = make_crawler(tmp_path, api, config=config, search_budget=budget).run()
+
+    assert summary.status is RunStatus.FAILED
+    assert api.transcript_calls == 2
+    assert budget.snapshot().transcript_spent == 2
+
+
+def test_nonretryable_transcript_failure_is_not_repeated(tmp_path) -> None:
+    api = PermanentTranscriptFailureSearchApi()
+    budget = SearchApiCreditBudget(5, 2)
+    config = CrawlConfig(
+        topic_query="research topic",
+        language="en",
+        start_date=date(2026, 1, 1),
+        max_queries=2,
+        max_depth=0,
+        searchapi_retries=2,
+    )
+
+    summary = make_crawler(tmp_path, api, config=config, search_budget=budget).run()
+
+    assert summary.status is RunStatus.FAILED
+    assert api.transcript_calls == 1
+    assert budget.snapshot().transcript_spent == 1
+
+
+def test_retry_stops_before_unfunded_transcript_attempt(tmp_path) -> None:
+    api = FailingTranscriptSearchApi()
+    budget = SearchApiCreditBudget(3, 1)
+    config = CrawlConfig(
+        topic_query="research topic",
+        language="en",
+        start_date=date(2026, 1, 1),
+        max_queries=2,
+        max_depth=0,
+        searchapi_retries=1,
+    )
+
+    summary = make_crawler(tmp_path, api, config=config, search_budget=budget).run()
+
+    assert summary.status is RunStatus.STOPPED_BUDGET
+    assert api.transcript_calls == 1
+    assert budget.snapshot().transcript_spent == 1
+
+
+def test_discovery_batch_retries_only_failed_members(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("yt_searchapi.crawler.time.sleep", lambda _delay: None)
+    budget = SearchApiCreditBudget(5, 2)
+    config = CrawlConfig(
+        topic_query="research topic",
+        language="en",
+        start_date=date(2026, 1, 1),
+        max_queries=2,
+        max_depth=0,
+        searchapi_retries=1,
+    )
+    crawler = make_crawler(
+        tmp_path,
+        FakeSearchApi(),
+        config=config,
+        search_budget=budget,
+    )
+    calls: list[list[str]] = []
+
+    def dispatch(requests):
+        calls.append([str(request["video_id"]) for request in requests])
+        return [
+            (
+                httpx.ConnectError("temporary DNS failure")
+                if request["video_id"] == "video-1" and len(calls) == 1
+                else youtube_video.SearchResponse()
+            )
+            for request in requests
+        ]
+
+    results, blocked = crawler._discovery_batch(
+        "youtube_video",
+        "youtube_video",
+        [{"video_id": "video-1"}, {"video_id": "video-2"}],
+        dispatch,
+    )
+
+    assert blocked is None
+    assert all(not isinstance(result, Exception) for result in results)
+    assert calls == [["video-1", "video-2"], ["video-1"]]
+    assert budget.snapshot().discovery_spent == 3
+
+
+def test_single_discovery_retry_is_separately_charged(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("yt_searchapi.crawler.time.sleep", lambda _delay: None)
+    budget = SearchApiCreditBudget(4, 1)
+    config = CrawlConfig(
+        topic_query="research topic",
+        language="en",
+        start_date=date(2026, 1, 1),
+        max_queries=2,
+        max_depth=0,
+        searchapi_retries=1,
+    )
+    crawler = make_crawler(
+        tmp_path,
+        FakeSearchApi(),
+        config=config,
+        search_budget=budget,
+    )
+    attempts = 0
+
+    def dispatch():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError("temporary DNS failure")
+        return youtube_video.SearchResponse()
+
+    response = crawler._discovery_call(
+        "youtube_video",
+        "youtube_video",
+        {"video_id": "video-1"},
+        dispatch,
+    )
+
+    assert isinstance(response, youtube_video.SearchResponse)
+    assert attempts == 2
+    assert budget.snapshot().discovery_spent == 2
 
 
 def test_unavailable_transcript_response_is_an_error_not_irrelevant(tmp_path) -> None:

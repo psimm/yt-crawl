@@ -6,7 +6,11 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from yt_searchapi.client import SearchApiClient
+from yt_searchapi.client import (
+    SearchApiClient,
+    SearchApiError,
+    is_retryable_searchapi_error,
+)
 from yt_searchapi.settings import DEFAULT_SEARCHAPI_WORKERS
 
 
@@ -267,3 +271,29 @@ def test_every_localized_endpoint_preserves_gl_and_hl() -> None:
 def test_invalid_transport_controls_are_rejected(kwargs, message) -> None:
     with pytest.raises(ValueError, match=message):
         SearchApiClient("test-key", **kwargs)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        httpx.ConnectError("[Errno 8] nodename nor servname provided"),
+        httpx.ReadError("[Errno 54] Connection reset by peer"),
+        httpx.ReadTimeout("response stalled"),
+        SearchApiError(429, "rate limited"),
+        SearchApiError(503, "temporarily unavailable"),
+    ],
+)
+def test_transient_searchapi_errors_are_retryable(error) -> None:
+    assert is_retryable_searchapi_error(error) is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        SearchApiError(400, "bad request"),
+        SearchApiError(401, "invalid API key"),
+        ValueError("invalid response"),
+    ],
+)
+def test_permanent_searchapi_errors_are_not_retryable(error) -> None:
+    assert is_retryable_searchapi_error(error) is False

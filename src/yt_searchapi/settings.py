@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Persisted project checkpoints retain the values they were created with.
 DEFAULT_SEARCHAPI_WORKERS = 8
 DEFAULT_LLM_WORKERS = 16
+DEFAULT_SEARCHAPI_RETRIES = 2
 
 
 class Settings(BaseSettings):
