@@ -15,6 +15,7 @@ from yt_searchapi.classifier import (
     RelevanceClassifier,
     RelevanceDecision,
     VideoCandidate,
+    compact_relevance_decision,
 )
 from yt_searchapi.interview import (
     INTERVIEW_QUESTIONS,
@@ -186,6 +187,9 @@ class InterviewTests(unittest.TestCase):
         self.assertEqual(brief.negative_examples, ("no: adjacent",))
         self.assertEqual(brief.must_include, ())
         self.assertEqual(brief.edge_case_guidance, ())
+        self.assertNotIn(
+            "start_date", {answer.question_id for answer in brief.verbatim_answers}
+        )
 
     def test_build_topic_brief_requires_every_fixed_answer(self) -> None:
         with self.assertRaisesRegex(ValueError, "Missing interview answer"):
@@ -208,14 +212,9 @@ class ClassifierTests(unittest.TestCase):
     def test_classifier_passes_candidate_and_returns_decision(self) -> None:
         decision = RelevanceDecision(
             decision="relevant",
-            confidence=91,
             language_match="match",
-            detected_language="German",
+            detected_language="de",
             primary_reason="topic_match",
-            matched_criteria=("Substantive retrofit experience",),
-            failed_criteria=(),
-            evidence=("Titel nennt Wärmepumpe im Mehrfamilienhaus",),
-            decision_point="German practical retrofit discussion is in scope.",
         )
         client = FakeClient(decision)
         candidate = VideoCandidate(
@@ -256,6 +255,7 @@ class ClassifierTests(unittest.TestCase):
         request = json.loads(call["input"][1]["content"][0]["text"])
         self.assertEqual(request["classification_stage"], "transcript")
         self.assertEqual(request["candidate"]["video_id"], "abc123")
+        self.assertNotIn("published_at", request["candidate"])
         markers = sum(
             "prompt_cache_breakpoint" in block
             for message in call["input"]
@@ -266,14 +266,9 @@ class ClassifierTests(unittest.TestCase):
     def test_classifier_exposes_bounded_ordered_batch_hook(self) -> None:
         decision = RelevanceDecision(
             decision="irrelevant",
-            confidence=90,
             language_match="mismatch",
-            detected_language="English",
+            detected_language="en",
             primary_reason="wrong_language",
-            matched_criteria=(),
-            failed_criteria=("Requested language mismatch",),
-            evidence=("Spoken language is English",),
-            decision_point="The video is in the wrong language.",
         )
         client = FakeClient(decision)
         jobs = tuple(
@@ -305,14 +300,9 @@ class ClassifierTests(unittest.TestCase):
     def test_classifier_rejects_inconsistent_relevant_decision(self) -> None:
         inconsistent = {
             "decision": "relevant",
-            "confidence": 70,
             "language_match": "unknown",
             "detected_language": None,
             "primary_reason": "topic_match",
-            "matched_criteria": [],
-            "failed_criteria": [],
-            "evidence": [],
-            "decision_point": "No language evidence.",
         }
         client = FakeClient(inconsistent)
         candidate = VideoCandidate(
@@ -332,16 +322,9 @@ class ClassifierTests(unittest.TestCase):
     def test_metadata_stage_returns_binary_provisional_relevant_decision(self) -> None:
         provisional = RelevanceDecision(
             decision="relevant",
-            confidence=60,
             language_match="match",
-            detected_language="German",
+            detected_language="de",
             primary_reason="topic_match",
-            matched_criteria=("Title appears to match",),
-            failed_criteria=(),
-            evidence=("Title contains the exact subject",),
-            decision_point=(
-                "Available metadata supports the requested topic and language."
-            ),
         )
         client = FakeClient(provisional)
         candidate = VideoCandidate(
@@ -363,14 +346,9 @@ class ClassifierTests(unittest.TestCase):
     def test_schema_rejects_non_binary_decision_and_omits_retired_score(self) -> None:
         non_binary = {
             "decision": "needs_transcript",
-            "confidence": 60,
             "language_match": "unknown",
             "detected_language": None,
             "primary_reason": "insufficient_evidence",
-            "matched_criteria": [],
-            "failed_criteria": [],
-            "evidence": [],
-            "decision_point": "Need more evidence.",
         }
         schema = RelevanceDecision.model_json_schema()
         retired_score_field = "topicality" + "_score"
@@ -378,7 +356,70 @@ class ClassifierTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RelevanceDecision.model_validate(non_binary)
         self.assertNotIn(retired_score_field, schema["properties"])
+        self.assertNotIn("confidence", schema["properties"])
+        self.assertNotIn("matched_criteria", schema["properties"])
+        self.assertNotIn("evidence", schema["properties"])
         self.assertNotIn("needs_transcript", str(schema))
+        self.assertEqual(
+            set(schema["properties"]),
+            {"decision", "language_match", "detected_language", "primary_reason"},
+        )
+
+    def test_detected_language_requires_a_language_code(self) -> None:
+        with self.assertRaises(ValidationError):
+            RelevanceDecision(
+                decision="irrelevant",
+                language_match="mismatch",
+                detected_language="English",
+                primary_reason="wrong_language",
+            )
+
+    def test_legacy_pending_decision_is_projected_to_compact_schema(self) -> None:
+        decision = compact_relevance_decision(
+            {
+                "decision": "relevant",
+                "language_match": "match",
+                "detected_language": "English",
+                "primary_reason": "topic_match",
+                "confidence": 0.98,
+                "matched_criteria": ["criterion-1"],
+                "evidence": ["title"],
+            },
+            requested_language="en",
+        )
+
+        self.assertEqual(
+            decision.model_dump(),
+            {
+                "decision": "relevant",
+                "language_match": "match",
+                "detected_language": "en",
+                "primary_reason": "topic_match",
+            },
+        )
+
+    def test_unknown_language_requires_null_detected_language(self) -> None:
+        client = FakeClient(
+            {
+                "decision": "irrelevant",
+                "language_match": "unknown",
+                "detected_language": "de",
+                "primary_reason": "insufficient_evidence",
+            }
+        )
+        candidate = VideoCandidate(
+            video_id="abc123",
+            title="Unknown language",
+            discovery_source="related",
+            discovery_reference="seed-video",
+        )
+
+        with self.assertRaisesRegex(ValueError, "detected_language=None"):
+            RelevanceClassifier(client).classify(
+                candidate,
+                compile_classifier_prompt(sample_brief(), sample_expansion()),
+                stage="metadata",
+            )
 
     def test_prompt_contains_no_non_binary_decision_or_retired_score(self) -> None:
         prompt = compile_classifier_prompt(sample_brief(), sample_expansion())

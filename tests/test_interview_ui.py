@@ -173,7 +173,7 @@ def test_five_question_flow_selection_edit_custom_and_confirmation(
         answer.question_id: json.loads(answer.answer)
         for answer in brief.verbatim_answers
     }
-    assert decoded["start_date"] == ["2025-01-02"]
+    assert "start_date" not in decoded
 
 
 def test_inquirer_checkbox_e_edit_reopens_same_choice_list(monkeypatch) -> None:

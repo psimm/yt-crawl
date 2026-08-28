@@ -196,6 +196,39 @@ def test_record_schemas_forbid_unknown_fields() -> None:
         RunConfigRecord.model_validate(payload)
 
 
+def test_legacy_relevance_decision_is_compacted_during_validation() -> None:
+    compact = validate_run_record(
+        {
+            "schema_version": "1",
+            "run_id": "run-001",
+            "record_type": "relevance_decision",
+            "decision_id": "decision-1",
+            "video_id": "video-1",
+            "label": "irrelevant",
+            "decision_point": "video_metadata",
+            "reason": "irrelevant: outside the research scope",
+            "confidence": 0.99,
+            "requested_language": "en",
+            "detected_language": "en",
+            "language_matches": True,
+            "published_after_start_date": True,
+            "criteria": [],
+            "positive_example_ids": [],
+            "negative_example_ids": [],
+            "model": "gpt-5.6-luna",
+            "prompt_version": "relevance-v3",
+            "prompt_sha256": "a" * 64,
+            "llm_input_tokens": 100,
+            "llm_output_tokens": 20,
+            "transcript_reserved": False,
+        }
+    )
+
+    assert compact.primary_reason == "irrelevant: outside the research scope"
+    assert "confidence" not in compact.model_dump()
+    assert "criteria" not in compact.model_dump()
+
+
 def test_relevant_decision_requires_transcript_reservation() -> None:
     with pytest.raises(ValidationError, match="reserve transcript credits"):
         RelevanceDecisionRecord(
@@ -204,8 +237,7 @@ def test_relevant_decision_requires_transcript_reservation() -> None:
             video_id="video-1",
             label=RelevanceLabel.RELEVANT,
             decision_point="video_metadata",
-            reason="Directly addresses the topic.",
-            confidence=0.9,
+            primary_reason="topic_match",
             requested_language="en",
             detected_language="en",
             language_matches=True,
@@ -226,8 +258,7 @@ def test_needs_transcript_lifecycle_record_requires_reservation() -> None:
             video_id="video-1",
             label=RelevanceLabel.NEEDS_TRANSCRIPT,
             decision_point="video_metadata",
-            reason="Transcript needed for final decision.",
-            confidence=0.7,
+            primary_reason="topic_match",
             requested_language="en",
             language_matches=False,
             model="gpt-5.6-luna",

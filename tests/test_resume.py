@@ -226,27 +226,17 @@ class CountingClassifier:
             self.metadata_calls += 1
             decision = RelevanceDecision(
                 decision="relevant",
-                confidence=70,
                 language_match="match",
                 detected_language="en",
                 primary_reason="topic_match",
-                matched_criteria=("substantive",),
-                failed_criteria=(),
-                evidence=("Metadata warrants a transcript check.",),
-                decision_point="Metadata supports the topic and language.",
             )
         else:
             self.transcript_calls += 1
             decision = RelevanceDecision(
                 decision="relevant",
-                confidence=95,
                 language_match="match",
                 detected_language="en",
                 primary_reason="topic_match",
-                matched_criteria=("substantive",),
-                failed_criteria=(),
-                evidence=("Transcript substantively covers the topic.",),
-                decision_point="Substantive target-language discussion.",
             )
         return LlmCallResult(
             output=decision,

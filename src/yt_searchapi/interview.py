@@ -210,12 +210,16 @@ def conduct_interview(
                 raise TypeError(f"{question.question_id} requires a single string")
             items = (answer,)
         values[question.question_id] = items
-        raw_answers.append(
-            InterviewAnswer(
-                question_id=question.question_id,
-                answer=json.dumps(items, ensure_ascii=False),
+        # Operational metadata filters are preserved in their dedicated run
+        # settings and audit rows, but must never enter topic expansion. The
+        # qualitative fields below already preserve every relevance answer.
+        if question.question_id != "start_date":
+            raw_answers.append(
+                InterviewAnswer(
+                    question_id=question.question_id,
+                    answer=json.dumps(items, ensure_ascii=False),
+                )
             )
-        )
 
     return TopicBrief(
         topic_query=topic_query,

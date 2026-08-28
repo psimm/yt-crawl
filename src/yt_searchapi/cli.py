@@ -57,6 +57,10 @@ from yt_searchapi.records import (
     RunStatus,
     RunStatusRecord,
 )
+from yt_searchapi.recovery import (
+    apply_date_prompt_recovery,
+    plan_date_prompt_recovery,
+)
 from yt_searchapi.run_tui import RunDashboard
 from yt_searchapi.settings import (
     DEFAULT_LLM_WORKERS,
@@ -90,6 +94,63 @@ app = typer.Typer(
     ),
 )
 console = Console()
+
+
+@app.command("recover-date-prompt-leak")
+def recover_date_prompt_leak(
+    project: Annotated[
+        Path,
+        typer.Option(
+            "--project",
+            exists=True,
+            file_okay=False,
+            resolve_path=True,
+            help="Existing project whose classifier prompt contains a date cutoff.",
+        ),
+    ],
+    contaminated_cutoff: Annotated[
+        str,
+        typer.Option(
+            "--contaminated-cutoff",
+            help="Publication cutoff that leaked into the classifier (YYYY-MM-DD).",
+        ),
+    ],
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help="Write the repaired prompt and reopen affected decisions.",
+        ),
+    ] = False,
+) -> None:
+    """Repair a leaked date criterion without rewriting append-only audit data."""
+
+    try:
+        cutoff = date.fromisoformat(contaminated_cutoff)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "--contaminated-cutoff must use ISO format YYYY-MM-DD"
+        ) from exc
+    plan = plan_date_prompt_recovery(
+        project,
+        contaminated_cutoff=cutoff,
+    )
+    console.print(
+        f"Date-contaminated terminal decisions: "
+        f"[bold]{len(plan.affected_video_ids)}[/bold]\n"
+        f"Prompt: {plan.old_prompt_sha256} → {plan.new_prompt.prompt_sha256}\n"
+        f"Classifier version: {CLASSIFIER_PROMPT_VERSION}"
+    )
+    if not apply:
+        console.print("Dry run only. Pass [bold]--apply[/bold] to write the repair.")
+        return
+    result = apply_date_prompt_recovery(plan)
+    console.print(
+        f"[bold green]Recovery applied.[/bold green] "
+        f"Reopened {result.affected_video_count} videos.\n"
+        f"Checkpoint backup: {result.backup_path}\n"
+        f"Recovery report: {result.report_path}"
+    )
 
 
 @app.command()

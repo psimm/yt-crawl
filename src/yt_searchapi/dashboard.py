@@ -463,18 +463,15 @@ def _create_normalized_views(connection: duckdb.DuckDBPyConnection) -> None:
             json_extract_string(payload, '$.video_id') AS video_id,
             json_extract_string(payload, '$.label') AS label,
             json_extract_string(payload, '$.decision_point') AS decision_point,
-            json_extract_string(payload, '$.reason') AS reason,
-            try_cast(json_extract_string(payload, '$.confidence') AS DOUBLE)
-                AS confidence,
+            coalesce(
+                json_extract_string(payload, '$.primary_reason'),
+                json_extract_string(payload, '$.reason')
+            ) AS primary_reason,
             json_extract_string(payload, '$.requested_language')
                 AS requested_language,
             json_extract_string(payload, '$.detected_language') AS detected_language,
             try_cast(json_extract_string(payload, '$.language_matches') AS BOOLEAN)
                 AS language_matches,
-            try_cast(
-                json_extract_string(payload, '$.published_after_start_date') AS BOOLEAN
-            ) AS published_after_start_date,
-            json_extract(payload, '$.criteria') AS criteria,
             json_extract_string(payload, '$.model') AS model,
             json_extract_string(payload, '$.prompt_version') AS prompt_version,
             try_cast(json_extract_string(payload, '$.llm_input_tokens') AS BIGINT)
@@ -884,13 +881,10 @@ def _query_decisions(connection: duckdb.DuckDBPyConnection) -> list[dict[str, An
             video_id,
             label,
             decision_point,
-            reason,
-            confidence,
+            primary_reason,
             requested_language,
             detected_language,
             language_matches,
-            published_after_start_date,
-            criteria,
             model,
             prompt_version,
             coalesce(llm_input_tokens, 0) AS llm_input_tokens,
@@ -900,10 +894,7 @@ def _query_decisions(connection: duckdb.DuckDBPyConnection) -> list[dict[str, An
         FROM decisions
         ORDER BY source_line
         """,
-        json_fields={"criteria"},
     )
-    for row in rows:
-        row["confidence_percent"] = _percent(row.get("confidence"))
     return rows
 
 
@@ -1041,11 +1032,9 @@ def _query_videos(connection: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]
             candidate.discovery_query,
             final_decision.label AS final_label,
             final_decision.decision_point,
-            final_decision.reason AS decision_reason,
-            final_decision.confidence,
+            final_decision.primary_reason,
             final_decision.detected_language,
             final_decision.language_matches,
-            final_decision.published_after_start_date,
             latest_transcript.is_available AS transcript_available,
             latest_transcript.language AS transcript_language,
             latest_transcript.transcript_type,
@@ -1066,7 +1055,6 @@ def _query_videos(connection: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]
         """,
     )
     for row in rows:
-        row["confidence_percent"] = _percent(row.get("confidence"))
         row["duration_display"] = _duration_display(row.get("duration_seconds"))
     return rows
 
@@ -1285,9 +1273,8 @@ def _presentation_video(video: dict[str, Any]) -> dict[str, Any]:
         "published_at": video.get("published_at"),
         "discovered_via": video.get("discovered_via"),
         "decision_point": video.get("decision_point"),
-        "confidence": float(video.get("confidence") or 0),
         "language": video.get("transcript_language") or video.get("detected_language"),
-        "reason": video.get("decision_reason"),
+        "primary_reason": video.get("primary_reason"),
         "decision_label": video.get("final_label") or "pending",
         "decision_display": _presentation_decision_label(
             video.get("final_label") or "pending"
@@ -1874,11 +1861,11 @@ _BUILTIN_TEMPLATE = r"""<!doctype html>
   </section>
 
   <section class="panel"><h2>Videos</h2>
-    {% if videos %}<div class="table-wrap"><table><thead><tr><th>Video</th><th>Channel</th><th>Discovered via</th><th>Published</th><th>Duration</th><th>Final decision</th><th>Point</th><th>Confidence</th><th>Transcript</th><th>Reason</th></tr></thead><tbody>
+    {% if videos %}<div class="table-wrap"><table><thead><tr><th>Video</th><th>Channel</th><th>Discovered via</th><th>Published</th><th>Duration</th><th>Final decision</th><th>Point</th><th>Transcript</th><th>Primary reason</th></tr></thead><tbody>
     {% for video in videos %}<tr>
       <td>{% if video.url %}<a href="{{ video.url }}">{{ video.title }}</a>{% else %}{{ video.title }}{% endif %}<br><code>{{ video.video_id }}</code></td>
       <td>{{ video.channel_title or video.channel_id or '—' }}</td><td>{{ video.discovered_via or '—' }}</td><td>{{ video.published_at or '—' }}</td><td>{{ video.duration_display or '—' }}</td>
-      <td><span class="label {{ video.final_label or '' }}">{{ video.final_label or 'pending' }}</span></td><td>{{ video.decision_point or '—' }}</td><td>{{ video.confidence_percent or '—' }}</td><td>{% if video.transcript_available is true %}available ({{ video.transcript_segments }}){% elif video.transcript_available is false %}unavailable{% else %}—{% endif %}</td><td class="reason">{{ video.decision_reason or video.transcript_unavailable_reason or '—' }}</td>
+      <td><span class="label {{ video.final_label or '' }}">{{ video.final_label or 'pending' }}</span></td><td>{{ video.decision_point or '—' }}</td><td>{% if video.transcript_available is true %}available ({{ video.transcript_segments }}){% elif video.transcript_available is false %}unavailable{% else %}—{% endif %}</td><td class="reason">{{ video.primary_reason or video.transcript_unavailable_reason or '—' }}</td>
     </tr>{% endfor %}
     </tbody></table></div>{% else %}<p class="empty">No video candidates recorded.</p>{% endif %}
   </section>
@@ -1890,8 +1877,8 @@ _BUILTIN_TEMPLATE = r"""<!doctype html>
   </section>
 
   <section class="panel"><h2>Decision audit trail</h2>
-    {% if decisions %}<div class="table-wrap"><table><thead><tr><th>Video</th><th>Point</th><th>Label</th><th>Confidence</th><th>Language</th><th>Model</th><th>Tokens</th><th>Reason</th></tr></thead><tbody>
-    {% for decision in decisions %}<tr><td><code>{{ decision.video_id }}</code></td><td>{{ decision.decision_point }}</td><td><span class="label {{ decision.label }}">{{ decision.label }}</span></td><td>{{ decision.confidence_percent }}</td><td>{{ decision.detected_language or '—' }}{% if decision.language_matches is false %} (mismatch){% endif %}</td><td>{{ decision.model }}</td><td>{{ decision.llm_input_tokens + decision.llm_output_tokens }}</td><td class="reason">{{ decision.reason }}</td></tr>{% endfor %}
+    {% if decisions %}<div class="table-wrap"><table><thead><tr><th>Video</th><th>Point</th><th>Label</th><th>Language</th><th>Model</th><th>Tokens</th><th>Primary reason</th></tr></thead><tbody>
+    {% for decision in decisions %}<tr><td><code>{{ decision.video_id }}</code></td><td>{{ decision.decision_point }}</td><td><span class="label {{ decision.label }}">{{ decision.label }}</span></td><td>{{ decision.detected_language or '—' }}{% if decision.language_matches is false %} (mismatch){% endif %}</td><td>{{ decision.model }}</td><td>{{ decision.llm_input_tokens + decision.llm_output_tokens }}</td><td class="reason">{{ decision.primary_reason }}</td></tr>{% endfor %}
     </tbody></table></div>{% else %}<p class="empty">No relevance decisions recorded.</p>{% endif %}
   </section>
 

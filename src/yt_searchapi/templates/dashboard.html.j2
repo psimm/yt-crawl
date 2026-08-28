@@ -32,7 +32,7 @@
     # video = {
     #   "id": str, "title": str, "url": str|None, "channel": str,
     #   "published_at": str, "discovered_via": str,
-    #   "decision_point": str, "confidence": number,
+    #   "decision_point": str, "primary_reason": str,
     #   "language": str|None, "reason": str,
     #   "transcript_status": "available|unavailable|not_requested"
     # }
@@ -769,7 +769,7 @@
                           <td>{{ session.recorded_at | default('—', true) | e }}</td>
                           <td class="number">{{ session.credits_added | default(0, true) }}</td>
                           <td class="number">{{ session.lifetime_grant | default('—', true) }}</td>
-                          <td>depth {{ session.max_depth }}, queries {{ session.max_queries }}, search pages {{ session.max_search_pages }}, channel pages {{ session.max_channel_pages }}</td>
+                          <td>depth {{ session.max_depth }}, queries {{ session.max_queries }}, search pages {{ session.max_search_pages }}, channel pages {{ session.max_channel_pages }}, retries {{ session.searchapi_retries | default(0, true) }}</td>
                         </tr>
                       {% endfor %}
                     </tbody>
@@ -910,16 +910,15 @@
           {% if relevant_videos or irrelevant_videos or other_videos %}
             <div class="table-wrap">
               <table>
-                <caption>Video relevance decisions and evidence</caption>
-                <thead><tr><th scope="col">Video</th><th scope="col">Decision</th><th scope="col">Point</th><th scope="col" class="number">Confidence</th><th scope="col">Reason</th><th scope="col">Transcript</th></tr></thead>
+                <caption>Video relevance decisions and primary reasons</caption>
+                <thead><tr><th scope="col">Video</th><th scope="col">Decision</th><th scope="col">Point</th><th scope="col">Primary reason</th><th scope="col">Transcript</th></tr></thead>
                 <tbody>
                   {% for video in relevant_videos %}
                     <tr data-decision-row="relevant">
                       <td class="cell-title">{% if video.url | default('', true) %}<a href="{{ video.url | e }}" rel="noreferrer">{{ video.title | e }}</a>{% else %}<strong>{{ video.title | e }}</strong>{% endif %}<small>{{ video.channel | default('Unknown channel', true) | e }} · {{ video.published_at | default('Unknown date', true) | e }} · via {{ video.discovered_via | default('unknown', true) | replace('_', ' ') | e }}</small></td>
                       <td><span class="pill pill--positive">Relevant</span><small>{{ video.language | default('language unknown', true) | e }}</small></td>
                       <td><span class="pill">{{ video.decision_point | default('—', true) | replace('_', ' ') | e }}</span></td>
-                      <td class="number">{{ (video.confidence | default(0, true) * 100) | round | int }}%</td>
-                      <td class="reason">{{ video.reason | default('No reason recorded.', true) | e }}</td>
+                      <td class="reason">{{ video.primary_reason | default('No reason recorded.', true) | e }}</td>
                       <td><span class="pill pill--{{ video.transcript_status | default('not_requested', true) | e }}">{{ video.transcript_status | default('not requested', true) | replace('_', ' ') | e }}</span></td>
                     </tr>
                   {% endfor %}
@@ -928,8 +927,7 @@
                       <td class="cell-title">{% if video.url | default('', true) %}<a href="{{ video.url | e }}" rel="noreferrer">{{ video.title | e }}</a>{% else %}<strong>{{ video.title | e }}</strong>{% endif %}<small>{{ video.channel | default('Unknown channel', true) | e }} · {{ video.published_at | default('Unknown date', true) | e }} · via {{ video.discovered_via | default('unknown', true) | replace('_', ' ') | e }}</small></td>
                       <td><span class="pill pill--negative">Irrelevant</span><small>{{ video.language | default('language unknown', true) | e }}</small></td>
                       <td><span class="pill">{{ video.decision_point | default('—', true) | replace('_', ' ') | e }}</span></td>
-                      <td class="number">{{ (video.confidence | default(0, true) * 100) | round | int }}%</td>
-                      <td class="reason">{{ video.reason | default('No reason recorded.', true) | e }}</td>
+                      <td class="reason">{{ video.primary_reason | default('No reason recorded.', true) | e }}</td>
                       <td><span class="pill pill--{{ video.transcript_status | default('not_requested', true) | e }}">{{ video.transcript_status | default('not requested', true) | replace('_', ' ') | e }}</span></td>
                     </tr>
                   {% endfor %}
@@ -938,8 +936,7 @@
                       <td class="cell-title">{% if video.url | default('', true) %}<a href="{{ video.url | e }}" rel="noreferrer">{{ video.title | e }}</a>{% else %}<strong>{{ video.title | e }}</strong>{% endif %}<small>{{ video.channel | default('Unknown channel', true) | e }} · {{ video.published_at | default('Unknown date', true) | e }} · via {{ video.discovered_via | default('unknown', true) | replace('_', ' ') | e }}</small></td>
                       <td><span class="pill pill--{{ video.decision_label | default('pending', true) | e }}">{{ video.decision_display | default('pending', true) | e }}</span><small>{{ video.language | default('language unknown', true) | e }}</small></td>
                       <td><span class="pill">{{ video.decision_point | default('—', true) | replace('_', ' ') | e }}</span></td>
-                      <td class="number">{{ (video.confidence | default(0, true) * 100) | round | int }}%</td>
-                      <td class="reason">{{ video.reason | default('No reason recorded.', true) | e }}</td>
+                      <td class="reason">{{ video.primary_reason | default('No reason recorded.', true) | e }}</td>
                       <td><span class="pill pill--{{ video.transcript_status | default('not_requested', true) | e }}">{{ video.transcript_status | default('not requested', true) | replace('_', ' ') | e }}</span></td>
                     </tr>
                   {% endfor %}
@@ -947,7 +944,7 @@
               </table>
             </div>
           {% else %}
-            <div class="empty"><strong>No decisions recorded</strong>Classifications will appear with their evidence and decision point.</div>
+            <div class="empty"><strong>No decisions recorded</strong>Classifications will appear with their primary reason and decision point.</div>
           {% endif %}
         </div>
       </section>

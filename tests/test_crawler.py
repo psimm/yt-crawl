@@ -237,28 +237,16 @@ class FakeClassifier:
         if stage == "metadata":
             decision = RelevanceDecision(
                 decision="relevant",
-                confidence=70,
                 language_match="match",
                 detected_language="en",
                 primary_reason="topic_match",
-                matched_criteria=("substantive topic",),
-                failed_criteria=(),
-                evidence=("Title is a focused interview",),
-                decision_point=(
-                    "Metadata supports a target-language substantive interview."
-                ),
             )
         else:
             decision = RelevanceDecision(
                 decision="relevant",
-                confidence=95,
                 language_match="match",
                 detected_language="en",
                 primary_reason="topic_match",
-                matched_criteria=("substantive topic",),
-                failed_criteria=(),
-                evidence=("Transcript discusses the topic in depth",),
-                decision_point="Target-language substantive interview.",
             )
         return LlmCallResult(
             output=decision,
@@ -301,26 +289,16 @@ class ConcurrentResponses:
         if stage == "metadata":
             decision = RelevanceDecision(
                 decision="relevant",
-                confidence=75,
                 language_match="match",
                 detected_language="de",
                 primary_reason="topic_match",
-                matched_criteria=("substantive",),
-                failed_criteria=(),
-                evidence=("Metadata supports the topic and language.",),
-                decision_point="Metadata supports the topic and language.",
             )
         else:
             decision = RelevanceDecision(
                 decision="relevant",
-                confidence=95,
                 language_match="match",
                 detected_language="de",
                 primary_reason="topic_match",
-                matched_criteria=("substantive",),
-                failed_criteria=(),
-                evidence=("Substantive transcript.",),
-                decision_point="Substantive transcript.",
             )
         return SimpleNamespace(
             output_parsed=decision,
@@ -488,7 +466,10 @@ def test_metadata_relevant_is_provisional_until_transcript_classification(
         ("video_metadata", "needs_transcript"),
         ("transcript", "relevant"),
     ]
-    assert decisions[0]["reason"].startswith("relevant:")
+    assert decisions[0]["primary_reason"] == "topic_match"
+    assert "confidence" not in decisions[0]
+    assert "criteria" not in decisions[0]
+    assert "published_after_start_date" not in decisions[0]
 
 
 def test_max_depth_zero_does_not_expand_search_result_channels(tmp_path) -> None:
@@ -875,7 +856,7 @@ def test_unavailable_transcript_response_is_an_error_not_irrelevant(tmp_path) ->
         "needs_transcript",
         "error",
     ]
-    assert decisions[-1]["reason"] == "transcript_response_error"
+    assert decisions[-1]["primary_reason"] == "transcript_response_error"
     assert errors[-1]["message"] == "Transcript disabled by uploader"
     restored = make_crawler(tmp_path, api)
     assert restored._unavailable_transcript_ids == {"video-1"}
@@ -903,7 +884,7 @@ def test_empty_transcript_response_is_an_error_not_irrelevant(tmp_path) -> None:
         "needs_transcript",
         "error",
     ]
-    assert decisions[-1]["reason"] == "empty_transcript"
+    assert decisions[-1]["primary_reason"] == "empty_transcript"
 
 
 def test_llm_batching_is_independent_of_searchapi_worker_limit(

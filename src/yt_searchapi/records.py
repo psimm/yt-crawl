@@ -246,27 +246,16 @@ class VideoCandidateRecord(RunRecordBase):
     raw_payload: dict[str, JsonValue] | None = None
 
 
-class RelevanceCriterion(StrictRecord):
-    criterion: str = Field(min_length=1)
-    matched: bool
-    evidence: str = Field(min_length=1)
-
-
 class RelevanceDecisionRecord(RunRecordBase):
     record_type: Literal["relevance_decision"] = "relevance_decision"
     decision_id: str = Field(min_length=1)
     video_id: str = Field(min_length=1)
     label: RelevanceLabel
     decision_point: DecisionPoint
-    reason: str = Field(min_length=1)
-    confidence: float = Field(ge=0.0, le=1.0)
+    primary_reason: str = Field(min_length=1)
     requested_language: str = Field(min_length=1)
     detected_language: str | None = None
     language_matches: bool | None
-    published_after_start_date: bool | None = None
-    criteria: tuple[RelevanceCriterion, ...] = ()
-    positive_example_ids: tuple[str, ...] = ()
-    negative_example_ids: tuple[str, ...] = ()
     model: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
     prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -399,4 +388,19 @@ def validate_run_record(value: object) -> RunRecord:
         value = dict(value)
         value.pop("llm_discovery_tokens", None)
         value.pop("llm_transcript_tokens", None)
+    elif (
+        isinstance(value, Mapping)
+        and value.get("record_type") == "relevance_decision"
+    ):
+        value = dict(value)
+        value.setdefault("primary_reason", value.get("reason"))
+        for retired in (
+            "reason",
+            "confidence",
+            "published_after_start_date",
+            "criteria",
+            "positive_example_ids",
+            "negative_example_ids",
+        ):
+            value.pop(retired, None)
     return RUN_RECORD_ADAPTER.validate_python(value)

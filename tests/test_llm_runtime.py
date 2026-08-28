@@ -164,14 +164,9 @@ def test_classifier_cache_controls_reach_the_sdk_http_body(tmp_path) -> None:
     request_bodies: list[dict[str, Any]] = []
     decision = {
         "decision": "irrelevant",
-        "confidence": 90,
         "language_match": "mismatch",
-        "detected_language": "English",
+        "detected_language": "en",
         "primary_reason": "wrong_language",
-        "matched_criteria": [],
-        "failed_criteria": ["Requested language mismatch"],
-        "evidence": ["Spoken language is English"],
-        "decision_point": "The video is in the wrong language.",
     }
 
     def handler(request: httpx.Request) -> httpx.Response:

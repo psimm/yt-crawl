@@ -40,8 +40,7 @@ export type VideoRow = {
   discovery_query: string | null;
   final_label: string | null;
   decision_point: string | null;
-  confidence: number | null;
-  reason: string | null;
+  primary_reason: string | null;
   transcript_available: boolean;
   transcript_words: number;
   transcript_segments: number;

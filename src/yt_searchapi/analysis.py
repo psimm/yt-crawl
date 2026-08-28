@@ -731,8 +731,7 @@ class DuckDBAnalytics:
                 v.discovery_query,
                 v.final_label,
                 v.decision_point,
-                v.confidence,
-                v.reason,
+                v.primary_reason,
                 v.transcript_available,
                 v.transcript_words,
                 v.transcript_segments,
@@ -946,8 +945,7 @@ def _create_analysis_views(connection: duckdb.DuckDBPyConnection) -> None:
             ) AS in_scope_date,
             d.label AS final_label,
             d.decision_point,
-            d.confidence,
-            d.reason,
+            d.primary_reason,
             t.is_available AS transcript_available,
             t.video_id IS NOT NULL AS transcript_seen,
             coalesce(tt.transcript_text, '') AS transcript_text,
@@ -1044,7 +1042,6 @@ def _video_order(params: dict[str, list[str]]) -> str:
         "published": "published_at",
         "duration": "duration_seconds",
         "title": "title",
-        "confidence": "confidence",
     }
     return f"{columns.get(order, columns['views'])} {direction} NULLS LAST, v.video_id"
 

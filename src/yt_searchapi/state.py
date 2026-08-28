@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from yt_searchapi.classifier import RelevanceDecision
+from yt_searchapi.classifier import compact_relevance_decision
 from yt_searchapi.prompts import CLASSIFIER_PROMPT_VERSION
 from yt_searchapi.settings import (
     DEFAULT_LLM_WORKERS,
@@ -124,7 +124,10 @@ def validate_pending_transcript_decisions(state: CrawlProjectState) -> None:
         if payload is None:
             continue
         try:
-            decision = RelevanceDecision.model_validate(payload)
+            decision = compact_relevance_decision(
+                payload,
+                requested_language=state.language,
+            )
         except Exception as exc:
             raise ValueError(
                 f"Pending metadata decision for {video_id!r} uses an obsolete "

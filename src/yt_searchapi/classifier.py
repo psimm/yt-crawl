@@ -39,9 +39,11 @@ class RelevanceDecision(StrictModel):
     """Auditable staged decision returned by the model."""
 
     decision: Literal["relevant", "irrelevant"]
-    confidence: int = Field(ge=0, le=100)
     language_match: Literal["match", "mismatch", "unknown"]
-    detected_language: str | None
+    detected_language: str | None = Field(
+        pattern=r"^[a-z]{2,3}(?:-[A-Za-z]{2,4})?$",
+        description="BCP-47-like language code such as de, en, or pt-BR",
+    )
     primary_reason: Literal[
         "topic_match",
         "off_topic",
@@ -49,10 +51,6 @@ class RelevanceDecision(StrictModel):
         "insufficient_evidence",
         "excluded_scope",
     ]
-    matched_criteria: tuple[str, ...]
-    failed_criteria: tuple[str, ...]
-    evidence: tuple[str, ...]
-    decision_point: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +102,12 @@ class RelevanceClassifier:
         candidate_json = json.dumps(
             {
                 "classification_stage": stage,
-                "candidate": candidate.model_dump(mode="json"),
+                # Publication time is an operational gate evaluated by the
+                # crawler before classification. Keeping it out of the model
+                # payload makes a second, qualitative date cutoff impossible.
+                "candidate": candidate.model_dump(
+                    mode="json", exclude={"published_at"}
+                ),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -208,6 +211,11 @@ def _validate_decision_consistency(
 ) -> None:
     """Reject structurally valid but logically inconsistent model output."""
 
+    if decision.language_match == "unknown":
+        if decision.detected_language is not None:
+            raise ValueError("Unknown language matches require detected_language=None")
+    elif decision.detected_language is None:
+        raise ValueError("Known language matches require detected_language")
     if decision.decision == "relevant":
         if decision.language_match != "match":
             raise ValueError("Relevant decisions require language_match='match'")
@@ -217,9 +225,47 @@ def _validate_decision_consistency(
         raise ValueError("Irrelevant decisions cannot use primary_reason='topic_match'")
 
 
+def compact_relevance_decision(
+    value: RelevanceDecision | dict[str, Any],
+    *,
+    requested_language: str,
+) -> RelevanceDecision:
+    """Load current or legacy pending output into the compact decision schema."""
+
+    if isinstance(value, RelevanceDecision):
+        return value
+    compact = {
+        key: value.get(key)
+        for key in (
+            "decision",
+            "language_match",
+            "detected_language",
+            "primary_reason",
+        )
+    }
+    try:
+        decision = RelevanceDecision.model_validate(compact)
+    except ValueError:
+        if compact["language_match"] != "match" or not isinstance(
+            compact["detected_language"], str
+        ):
+            raise
+        # Legacy pending responses sometimes used names such as "German".
+        # A positive match lets us replace that spelling with the already
+        # validated requested code without reclassifying the video.
+        requested_parts = requested_language.strip().replace("_", "-").split("-", 1)
+        compact["detected_language"] = "-".join(
+            [requested_parts[0].lower(), *requested_parts[1:]]
+        )
+        decision = RelevanceDecision.model_validate(compact)
+    _validate_decision_consistency(decision)
+    return decision
+
+
 __all__ = [
     "ClassificationJob",
     "RelevanceClassifier",
     "RelevanceDecision",
     "VideoCandidate",
+    "compact_relevance_decision",
 ]

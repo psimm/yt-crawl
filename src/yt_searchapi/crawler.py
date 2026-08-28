@@ -24,6 +24,7 @@ from yt_searchapi.classifier import (
     RelevanceClassifier,
     RelevanceDecision,
     VideoCandidate,
+    compact_relevance_decision,
 )
 from yt_searchapi.client import (
     SearchApiClient,
@@ -55,7 +56,6 @@ from yt_searchapi.records import (
     QueryKind,
     QueryRecord,
     QueryStatus,
-    RelevanceCriterion,
     RelevanceDecisionRecord,
     RelevanceLabel,
     RunErrorRecord,
@@ -669,7 +669,6 @@ class ResearchCrawler:
                 discovered.video_id,
                 "video_detail_missing",
                 language_matches=None,
-                published_after=None,
             )
             return None
         channel_id = detail.channel.id if detail.channel else discovered.channel_id
@@ -719,7 +718,6 @@ class ResearchCrawler:
                 discovered.video_id,
                 f"{reason}: {date_evidence.raw!r}",
                 language_matches=None,
-                published_after=(False if date_evidence.certainty == "exact" else None),
             )
             return None
         languages = [
@@ -732,7 +730,6 @@ class ResearchCrawler:
                 discovered.video_id,
                 "requested_language_transcript_not_available",
                 language_matches=False,
-                published_after=True,
             )
             return None
         candidate = VideoCandidate(
@@ -809,7 +806,6 @@ class ResearchCrawler:
                     response_id=result.response_id,
                     point=DecisionPoint.VIDEO_METADATA,
                     transcript_reserved=False,
-                    published_after=True,
                 )
                 continue
             self._pending_transcript_contexts[video_id] = {
@@ -955,7 +951,6 @@ class ResearchCrawler:
                 response_id=result.response_id,
                 point=DecisionPoint.TRANSCRIPT,
                 transcript_reserved=True,
-                published_after=True,
             )
             self._pending_transcript_contexts.pop(video_id, None)
             self._save_state("running")
@@ -993,7 +988,10 @@ class ResearchCrawler:
             usage = metadata_result.usage
             response_id = metadata_result.response_id
         elif context.get("metadata_decision") is not None:
-            decision = RelevanceDecision.model_validate(context["metadata_decision"])
+            decision = compact_relevance_decision(
+                context["metadata_decision"],
+                requested_language=self.config.language,
+            )
             usage = LlmUsage.model_validate(context["metadata_usage"])
             response_id = context.get("metadata_response_id")
         else:
@@ -1009,7 +1007,6 @@ class ResearchCrawler:
             response_id=response_id,
             point=DecisionPoint.VIDEO_METADATA,
             transcript_reserved=True,
-            published_after=True,
         )
         context["metadata_decision_recorded"] = True
         self._save_state("running")
@@ -1961,7 +1958,6 @@ class ResearchCrawler:
         response_id: str | None,
         point: DecisionPoint,
         transcript_reserved: bool,
-        published_after: bool,
     ) -> None:
         if decision.decision == "relevant" and point is DecisionPoint.VIDEO_METADATA:
             # This is a lifecycle state, not a third model decision. The
@@ -1972,16 +1968,6 @@ class ResearchCrawler:
             label = RelevanceLabel.RELEVANT
         else:
             label = RelevanceLabel.IRRELEVANT
-        evidence = (
-            decision.evidence[0] if decision.evidence else decision.decision_point
-        )
-        criteria = tuple(
-            RelevanceCriterion(criterion=item, matched=True, evidence=evidence)
-            for item in decision.matched_criteria
-        ) + tuple(
-            RelevanceCriterion(criterion=item, matched=False, evidence=evidence)
-            for item in decision.failed_criteria
-        )
         self.writer.append(
             RelevanceDecisionRecord(
                 run_id=self.writer.run_id,
@@ -1989,8 +1975,7 @@ class ResearchCrawler:
                 video_id=video_id,
                 label=label,
                 decision_point=point,
-                reason=f"{decision.decision}: {decision.decision_point}",
-                confidence=decision.confidence / 100,
+                primary_reason=decision.primary_reason,
                 requested_language=self.config.language,
                 detected_language=decision.detected_language,
                 language_matches=(
@@ -1998,8 +1983,6 @@ class ResearchCrawler:
                     if decision.language_match == "unknown"
                     else decision.language_match == "match"
                 ),
-                published_after_start_date=published_after,
-                criteria=criteria,
                 model=self.classifier.model,
                 prompt_version=CLASSIFIER_PROMPT_VERSION,
                 prompt_sha256=self.prompt.prompt_sha256,
@@ -2020,7 +2003,6 @@ class ResearchCrawler:
         reason: str,
         *,
         language_matches: bool | None,
-        published_after: bool | None,
         point: DecisionPoint = DecisionPoint.VIDEO_METADATA,
         transcript_reserved: bool = False,
     ) -> None:
@@ -2031,11 +2013,9 @@ class ResearchCrawler:
                 video_id=video_id,
                 label=RelevanceLabel.IRRELEVANT,
                 decision_point=point,
-                reason=reason,
-                confidence=1.0,
+                primary_reason=reason,
                 requested_language=self.config.language,
                 language_matches=language_matches,
-                published_after_start_date=published_after,
                 model="deterministic-gates",
                 prompt_version="gates-v1",
                 prompt_sha256=self.prompt.prompt_sha256,
@@ -2064,11 +2044,9 @@ class ResearchCrawler:
                 video_id=video_id,
                 label=RelevanceLabel.ERROR,
                 decision_point=point,
-                reason=reason,
-                confidence=0.0,
+                primary_reason=reason,
                 requested_language=self.config.language,
                 language_matches=None,
-                published_after_start_date=None,
                 model="not-classified-error",
                 prompt_version="error-v1",
                 prompt_sha256=self.prompt.prompt_sha256,
@@ -2103,11 +2081,9 @@ class ResearchCrawler:
                     video_id=video_id,
                     label=label,
                     decision_point=DecisionPoint.SEARCH_RESULT,
-                    reason=reason,
-                    confidence=0.0,
+                    primary_reason=reason,
                     requested_language=self.config.language,
                     language_matches=None,
-                    published_after_start_date=None,
                     model="not-classified",
                     prompt_version="disposition-v1",
                     prompt_sha256=self.prompt.prompt_sha256,

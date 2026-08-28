@@ -124,6 +124,7 @@ class ConfirmedInterview(StrictModel):
                         "answer": _json_answer(value),
                     }
                     for section, value in values.items()
+                    if section != "start_date"
                 ),
             }
         )
