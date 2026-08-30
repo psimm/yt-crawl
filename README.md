@@ -12,11 +12,6 @@ The crawler does **not** use the official YouTube Data API.
 
 - `start` creates a project. `resume` continues that project or expands its
   crawl limits.
-- `recover-date-prompt-leak` repairs a legacy classifier prompt that included
-  an operational publication cutoff. Run it first with `--project` and
-  `--contaminated-cutoff YYYY-MM-DD` to inspect the plan, then repeat with
-  `--apply`. It backs up `crawl_state.json`, preserves the append-only audit
-  streams, and reopens only decisions with a structured failed cutoff criterion.
 - `--max-credits` is the project's initial, cumulative SearchAPI credit grant.
   Every later `--add-credits N` increases that lifetime grant by exactly `N`.
   Dispatched requests are charged to the local ledger, including ambiguous
