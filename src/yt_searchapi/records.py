@@ -177,7 +177,7 @@ class InterviewAnswerRecord(RunRecordBase):
     answer: str
     example_kind: InterviewExampleKind
     # New runs store the confirmed values as structured items. ``answer`` and
-    # ``generated_example`` remain for dashboards and older JSONL readers.
+    # ``generated_example`` remain for older JSONL readers.
     answer_items: tuple[InterviewAnswerItem, ...] | None = None
     generated_examples: tuple[dict[str, JsonValue], ...] = ()
     generated_example: str | None = None

@@ -6,7 +6,6 @@ import json
 import math
 import os
 import shlex
-import webbrowser
 from datetime import date
 from pathlib import Path
 from typing import Annotated
@@ -94,6 +93,9 @@ app = typer.Typer(
     ),
 )
 console = Console()
+
+
+# TODO: Remove any mention of contamination from the crawler
 
 
 @app.command("recover-date-prompt-leak")
@@ -908,106 +910,6 @@ def resume(
         raise typer.Exit(code=1)
 
 
-@app.command("dashboard")
-def dashboard_command(
-    run_dir: Annotated[
-        Path,
-        typer.Option(
-            "--run-dir",
-            exists=True,
-            file_okay=False,
-            resolve_path=True,
-            help="Project directory containing cumulative JSONL files.",
-        ),
-    ],
-    output: Annotated[
-        Path | None,
-        typer.Option(
-            "--output",
-            help="Output HTML path; defaults to <run-dir>/dashboard.html.",
-        ),
-    ] = None,
-    open_browser: Annotated[
-        bool,
-        typer.Option(
-            "--open/--no-open",
-            help="Open the generated dashboard in the default browser.",
-        ),
-    ] = True,
-) -> None:
-    """Build a self-contained cumulative project dashboard without API calls."""
-
-    from yt_searchapi.dashboard import render_dashboard
-
-    path = render_dashboard(run_dir, output).resolve()
-    console.print(f"[bold green]Dashboard written:[/bold green] {path}")
-    if not open_browser:
-        console.print("Browser opening disabled; no server is needed.")
-        return
-
-    try:
-        opened = webbrowser.open(path.as_uri())
-    except webbrowser.Error as exc:
-        console.print(
-            "[yellow]Could not open the dashboard automatically:[/yellow] "
-            f"{exc}. Open {path} manually."
-        )
-    else:
-        if opened:
-            console.print("Opened the dashboard in your default browser.")
-        else:
-            console.print(
-                "[yellow]Could not open the dashboard automatically.[/yellow] "
-                f"Open {path} manually."
-            )
-
-
-@app.command("dashboard-live")
-def dashboard_live_command(
-    run_dir: Annotated[
-        Path,
-        typer.Option(
-            "--run-dir",
-            exists=True,
-            file_okay=False,
-            resolve_path=True,
-            help="Project directory containing cumulative JSONL files.",
-        ),
-    ],
-    host: Annotated[
-        str,
-        typer.Option("--host", help="Local interface to bind."),
-    ] = "127.0.0.1",
-    port: Annotated[
-        int,
-        typer.Option("--port", min=1, max=65535, help="Local HTTP port."),
-    ] = 8765,
-    web_dir: Annotated[
-        Path | None,
-        typer.Option(
-            "--web-dir",
-            help="Built dashboard assets; defaults to dashboard-app/dist.",
-        ),
-    ] = None,
-    open_browser: Annotated[
-        bool,
-        typer.Option("--open/--no-open", help="Open the live dashboard automatically."),
-    ] = True,
-) -> None:
-    """Serve the React dashboard with live DuckDB queries over the JSONL run."""
-
-    from yt_searchapi.dashboard_server import serve_dashboard
-
-    default_web_dir = Path(__file__).resolve().parents[2] / "dashboard-app" / "dist"
-    serve_dashboard(
-        run_dir,
-        web_dir=web_dir or default_web_dir,
-        host=host,
-        port=port,
-        open_browser=open_browser,
-    )
-
-
 def _prepare_research(
     *,
     writer: JsonlRunWriter,
@@ -1625,8 +1527,7 @@ def _print_summary(
     print_logfire_link(console)
     console.print(
         f"[bold]Stop reason:[/bold] {summary.stop_reason}\n"
-        "[bold]Check results:[/bold] uv run yt-crawl dashboard --run-dir "
-        f"{shlex.quote(str(run_dir.resolve()))}"
+        f"[bold]Project data:[/bold] {shlex.quote(str(run_dir.resolve()))}"
     )
     next_command = _suggested_next_command(summary, run_dir, search, controls=controls)
     if next_command:

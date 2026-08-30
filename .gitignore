@@ -11,6 +11,8 @@ wheels/
 
 # Local caches
 .cache/
+.pytest_cache/
+.ruff_cache/
 
 # Environment variables
 .env
@@ -19,6 +21,7 @@ wheels/
 output/
 runs/
 examples/
+.tmp
 
 # Legacy local credentials may still exist in upgraded checkouts. Keep them secret.
 .logfire/

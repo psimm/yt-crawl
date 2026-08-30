@@ -12,6 +12,11 @@ The crawler does **not** use the official YouTube Data API.
 
 - `start` creates a project. `resume` continues that project or expands its
   crawl limits.
+- `recover-date-prompt-leak` repairs a legacy classifier prompt that included
+  an operational publication cutoff. Run it first with `--project` and
+  `--contaminated-cutoff YYYY-MM-DD` to inspect the plan, then repeat with
+  `--apply`. It backs up `crawl_state.json`, preserves the append-only audit
+  streams, and reopens only decisions with a structured failed cutoff criterion.
 - `--max-credits` is the project's initial, cumulative SearchAPI credit grant.
   Every later `--add-credits N` increases that lifetime grant by exactly `N`.
   Dispatched requests are charged to the local ledger, including ambiguous
@@ -25,7 +30,9 @@ The crawler does **not** use the official YouTube Data API.
   unspent discovery capacity when needed.
 - Independent SearchAPI discovery, detail, and transcript requests run in
   bounded parallel batches. Pagination within one result chain remains
-  sequential and is budgeted page by page. SearchAPI client retries are disabled.
+  sequential and is budgeted page by page. Transient failures are retried by the
+  crawler so every dispatched attempt is charged and audited separately; failed
+  batch members retry without repeating successful siblings.
 - Each project has its own persistent request cache at
   `<project>/.cache/searchapi`. It has no TTL: identical SearchAPI requests in
   later sessions are served locally, audited as cache hits, and cost no local
@@ -184,6 +191,7 @@ transcripts may transfer still-unused discovery capacity when necessary.
 | Option | Range/default | Resume behavior | Meaning |
 | --- | --- | --- | --- |
 | `--searchapi-timeout SECONDS` | Greater than 0; default 90. | Saved; cannot currently be changed on resume. | Timeout for one SearchAPI request. A timeout is recorded as an error; ambiguous dispatched work remains conservatively charged. |
+| `--searchapi-retries N` | 0–5; default 2. | Optional replacement; saved for later resumes. | Additional attempts after transient transport errors, timeouts, HTTP 429, or 5xx responses. Every dispatched retry consumes and audits another SearchAPI credit. |
 | `--searchapi-workers N` | 1–32; default 8. | Optional replacement; saved for later resumes. | Maximum concurrent independent SearchAPI requests. Pagination within one query or channel remains sequential. This affects throughput, not frontier size. |
 | `--llm-workers N` | 1–32; default 16. | Optional replacement; saved for later resumes. | Maximum concurrent OpenAI video-classification requests. This affects throughput, not which candidates are eligible. |
 
@@ -191,15 +199,21 @@ The classifier model is currently fixed at `gpt-5.6-luna`. Transcript-stage
 classification receives at most 12,000 sampled transcript characters; neither
 value is currently exposed as a CLI setting.
 
+Each model decision returns only the binary decision, language match, a
+BCP-47-like detected-language code, and a categorical primary reason. Confidence
+scores, free-text explanations, criteria/evidence lists, labeled-example IDs,
+and the already-enforced publication-date result are not written to new LLM
+decision records. Existing verbose JSONL decisions remain readable.
+
 The interview and topic expansion happen before the first resumable checkpoint
-is created. The live dashboard appears while the query plan is compiling, but
-the project becomes resumable only when that preparation finishes and the
+is created. The live terminal status appears while the query plan is compiling,
+but the project becomes resumable only when that preparation finishes and the
 crawler initializes its saved frontier. If preparation is interrupted, rerun
 `start` with a different new/empty `--project` path.
 
 ## During a run
 
-The terminal switches from the interview to a live dashboard. Its header says
+The terminal switches from the interview to a live status display. Its header says
 either `START NEW PROJECT` or `RESUME EXISTING PROJECT`, followed by the current
 task, elapsed session time, crawl totals, query and channel progress, SearchAPI
 grant usage, cumulative OpenAI token and estimated-dollar usage, active/maximum
@@ -217,11 +231,11 @@ uv run yt-crawl resume --project runs/heat-pump-retrofits \
   --add-credits 0 --searchapi-workers 4 --llm-workers 8
 ```
 
-On resume, the dashboard loads prior counts from `crawl_state.json` and
+On resume, the terminal status display loads prior counts from `crawl_state.json` and
 `api_call.jsonl` before new work begins. Routine diagnostics and Python warnings
 are sent to Logfire when it is configured; they do not write a project log file
 or interrupt the Rich display. The terminal is reserved for the interview, live
-dashboard, final summary, and concise failure messages. The display uses
+status display, final summary, and concise failure messages. The display uses
 standard box drawing and is intended for a monospaced terminal font.
 
 The cost estimate uses current GPT-5.6 Luna Standard rates: $0.20 per million
@@ -236,7 +250,7 @@ disabled, and the sole manual breakpoint is after the fixed classifier
 instructions and few-shot examples, before video-specific content. Other LLM
 steps do not repeat a sufficiently regular prefix and therefore do not request
 prompt caching. Cached and cache-write tokens are read from provider usage and
-included in the dashboard estimate. See OpenAI's
+included in the terminal estimate. See OpenAI's
 [prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching).
 
 ## Start small, inspect, then expand
@@ -257,11 +271,7 @@ uv run yt-crawl start \
   --max-depth 1 \
   --project runs/heat-pump-retrofits
 
-# 2. Inspect the cumulative project results offline.
-uv run yt-crawl dashboard \
-  --run-dir runs/heat-pump-retrofits
-
-# 3. Add 30 credits, widen the same project, and adjust its parallelism.
+# 2. Add 30 credits, widen the same project, and adjust its parallelism.
 uv run yt-crawl resume \
   --project runs/heat-pump-retrofits \
   --add-credits 30 \
@@ -272,9 +282,6 @@ uv run yt-crawl resume \
   --searchapi-workers 4 \
   --llm-workers 8
 
-# 4. Regenerate the dashboard to see both sessions and cumulative totals.
-uv run yt-crawl dashboard \
-  --run-dir runs/heat-pump-retrofits
 ```
 
 `--add-credits` is additive: the example's lifetime project grant becomes
@@ -297,8 +304,8 @@ provisional, not final: resume retries it when capacity becomes available. A
 project that completed under its current controls must either increase at least
 one `--max-*` scope control or move `--start-date` earlier when resumed. Adding
 credits alone cannot discover more work, so the CLI rejects that no-op before
-checking funding or changing the saved grant. The terminal and dashboard
-therefore recommend `--add-credits 0` plus one eligible scope increase while
+checking funding or changing the saved grant. The terminal therefore recommends
+`--add-credits 0` plus one eligible scope increase while
 completed projects still have credits; they recommend added credits only after
 the aggregate SearchAPI balance reaches zero. Failed or budget-stopped projects
 instead resume their current frontier before widening scope.
@@ -313,8 +320,8 @@ sessions append to the same audit streams. After a resume funding check passes,
 the expanded grant and monotonic scope controls are atomically committed to
 `crawl_state.json` before the resume audit row or any crawler provider is
 initialized. `.cache/searchapi/` is the unlimited-TTL, project-local request
-cache. Files are split by record type so
-DuckDB and line-oriented tools can ingest them independently:
+cache. Files are split by record type so line-oriented tools can ingest them
+independently:
 
 - `run_config.jsonl`, `run_status.jsonl`, `run_metric.jsonl`
 - `interview_answer.jsonl`, `query.jsonl`
@@ -334,94 +341,6 @@ final inclusions.
 Unresolved candidates can also retain `deferred_budget` or `error`. The exact
 compiled system prompt, expansion, prompt hash, and Responses API IDs are
 retained for decision auditability.
-
-## Dashboard
-
-Generate a self-contained HTML dashboard for a project:
-
-```bash
-uv run yt-crawl dashboard --run-dir runs/heat-pump-retrofits
-```
-
-The generated dashboard opens in your default browser automatically. Use
-`--no-open` when running in automation or on a headless machine.
-
-Static dashboard options:
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `--run-dir PATH` | Required. | Existing project directory containing the cumulative JSONL audit. |
-| `--output PATH` | `<run-dir>/dashboard.html` | HTML file to create or replace. |
-| `--open` / `--no-open` | `--open` | Whether to open the generated file in the default browser. Generation itself is offline. |
-
-Generate the committed mock example without credentials or network calls:
-
-```bash
-uv run yt-crawl dashboard \
-  --run-dir examples/mock-run \
-  --output examples/mock-dashboard.html
-```
-
-DuckDB reads and transforms the JSONL files; the generated HTML contains its
-CSS, charts, tables, and data inline and does not need a CDN.
-It shows the latest project status and controls, cumulative SearchAPI grant,
-spent and remaining credits, cache hits, pending/deferred work, session history,
-and a copyable resume/expansion command when more work is possible. Query scope
-is split into planned variants, variants executed at least once, variants held
-back by the current `--max-queries`, and unfinished variants still within the
-current page limit. The live terminal shows cumulative OpenAI token usage and
-estimated Luna cost; both are recorded for visibility and are not an active
-budget.
-
-The repository includes a generated example at `examples/mock-dashboard.html`
-backed by fictional, schema-validated data in `examples/mock-run/`.
-
-### Live DuckDB explorer
-
-For interactive analysis, build the React client once and run the local
-read-only query layer alongside it:
-
-```bash
-cd dashboard-app
-bun install
-bun run build
-cd ..
-uv run yt-crawl dashboard-live --run-dir runs/personal-finance-de
-```
-
-`dashboard-live` serves the built React/Tailwind application and exposes a
-small JSON API backed by an in-memory DuckDB database. The crawler's JSONL
-files remain the source of truth: the server fingerprints them, rebuilds the
-DuckDB relations when they change, and does not create a second persistent
-database. Use `--no-open` for automation, or `--port` to choose another local
-port. During dashboard development, run `bun run dev` in `dashboard-app` and
-keep the Python command running for the `/api` proxy.
-
-Live dashboard options:
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `--run-dir PATH` | Required. | Existing project directory read by DuckDB. |
-| `--host ADDRESS` | `127.0.0.1` | Interface to bind. The default is local-only; binding a public interface exposes the dashboard without application authentication. |
-| `--port N` | `8765`; range 1–65535. | Local HTTP port. |
-| `--web-dir PATH` | `dashboard-app/dist` | Directory containing the built frontend assets. |
-| `--open` / `--no-open` | `--open` | Whether to open the live dashboard automatically. |
-
-The analysis is intentionally transparent and DuckDB-only. It includes
-candidate and decision funnels, observed views/likes distributions, channel
-aggregates, source provenance, metadata coverage, query-plan counts, title and
-description keyword frequencies, transcript search, and monthly publication
-trends. Topic hits use manually reviewed keyword definitions in
-`src/yt_searchapi/analysis.py`; the current map covers saving/budgeting,
-investing/ETFs, retirement/pensions, debt/credit, insurance, taxes/policy,
-housing, and tools/apps. Topics overlap by design, and all video-level
-results can be filtered server-side and opened in a transcript/detail drawer.
-
-The stack is React + TypeScript + Vite + Tailwind, Recharts for the charts,
-and TanStack Table for the drill-down table. A Next.js backend would add
-deployment and routing machinery without improving this local, append-only
-workflow, so the small standard-library Python HTTP layer is the simpler
-live boundary for now.
 
 ## Offline verification
 
