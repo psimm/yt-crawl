@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import date
 from pathlib import Path
 from typing import Any, Literal
@@ -192,8 +193,16 @@ class ProjectStateStore:
         validate_classifier_prompt_integrity(state)
         self.project_dir.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".json.tmp")
-        temporary.write_text(state.model_dump_json(indent=2), encoding="utf-8")
-        temporary.replace(self.path)
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(state.model_dump_json(indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, self.path)
+        directory_fd = os.open(self.project_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
 
 __all__ = [

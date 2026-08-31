@@ -268,6 +268,7 @@ class ResearchCrawler:
         self._pending_transcript_contexts: dict[str, dict[str, Any]] = {}
         self._stop_reason = "frontier_exhausted"
         self._planned_records_written = False
+        self._checkpoint_dirty = True
         provider_workers = int(getattr(searchapi, "max_workers", 1))
         self._searchapi_workers = max(
             1, min(self.config.searchapi_workers, provider_workers)
@@ -282,7 +283,7 @@ class ResearchCrawler:
         if resume_state is not None:
             self._restore_state(resume_state)
             self._refresh_frontier()
-        self._save_state("prepared")
+        self._commit_state("prepared", force=True)
 
     def run(self) -> CrawlSummary:
         """Continue seed search, classification, and graph expansion."""
@@ -306,19 +307,19 @@ class ResearchCrawler:
                 )
             self._planned_records_written = True
         self._deferred_video_ids.clear()
-        self._save_state("running")
+        self._mark_state_dirty()
+        self._commit_state("running")
 
         try:
             while True:
                 self._refresh_frontier()
                 if self._pipeline_batch_size > 1 and self._pending_transcript_contexts:
                     self._process_pending_transcript_batch()
-                    self._save_state("running")
                     continue
                 if self._video_queue:
                     if self._pipeline_batch_size > 1:
                         candidates = self._pop_video_batch()
-                        self._save_state("running")
+                        self._mark_state_dirty()
                         try:
                             self._process_video_batch(candidates)
                         except Exception:
@@ -329,27 +330,29 @@ class ResearchCrawler:
                                 ):
                                     self._video_queue.appendleft(candidate)
                                     self._queued_video_ids.add(candidate.video_id)
-                            self._save_state("running")
+                            self._mark_state_dirty()
+                            self._commit_state("running")
                             raise
-                        self._save_state("running")
+                        self._commit_state("running")
                         continue
                     candidate = self._video_queue.popleft()
                     self._queued_video_ids.discard(candidate.video_id)
-                    self._save_state("running")
+                    self._mark_state_dirty()
                     try:
                         self._process_video(candidate)
                     except Exception:
                         if candidate.video_id not in self._terminal_video_ids:
                             self._video_queue.appendleft(candidate)
                             self._queued_video_ids.add(candidate.video_id)
-                            self._save_state("running")
+                            self._mark_state_dirty()
+                        self._commit_state("running")
                         raise
-                    self._save_state("running")
+                    self._commit_state("running")
                     continue
                 if self._channel_queue:
                     if self._searchapi_workers > 1:
                         channels = self._pop_channel_batch()
-                        self._save_state("running")
+                        self._mark_state_dirty()
                         try:
                             self._expand_channel_batch(channels)
                         except Exception:
@@ -361,21 +364,23 @@ class ResearchCrawler:
                                 ):
                                     self._channel_queue.appendleft(channel)
                                     self._queued_channel_ids.add(channel.channel_id)
-                            self._save_state("running")
+                            self._mark_state_dirty()
+                            self._commit_state("running")
                             raise
-                        self._save_state("running")
+                        self._commit_state("running")
                         continue
                     channel = self._channel_queue.popleft()
                     self._queued_channel_ids.discard(channel.channel_id)
-                    self._save_state("running")
+                    self._mark_state_dirty()
                     try:
                         self._expand_channel(channel)
                     except Exception:
                         self._channel_queue.appendleft(channel)
                         self._queued_channel_ids.add(channel.channel_id)
-                        self._save_state("running")
+                        self._mark_state_dirty()
+                        self._commit_state("running")
                         raise
-                    self._save_state("running")
+                    self._commit_state("running")
                     continue
                 query = self._next_query_needing_work()
                 if query is not None:
@@ -406,7 +411,8 @@ class ResearchCrawler:
                 reason=summary.stop_reason,
             )
         )
-        self._save_state(status.value)
+        self._mark_state_dirty()
+        self._commit_state(status.value, force=True)
         logger.info(
             "Crawler session finished run_id={} status={} reason={}",
             self.writer.run_id,
@@ -469,7 +475,7 @@ class ResearchCrawler:
             progress.pages_completed += 1
             progress.next_page_token = next_token
             progress.exhausted = not next_token or next_token == previous_token
-            self._save_state("running")
+            self._mark_state_dirty()
             if progress.exhausted:
                 break
         self._executed_queries.add(query.text)
@@ -482,6 +488,8 @@ class ResearchCrawler:
                 source_request_id=progress.first_request_id,
             )
         )
+        self._mark_state_dirty()
+        self._commit_state("running")
 
     def _execute_query_batch(self, queries: list[_PlannedQuery]) -> None:
         """Fetch one page per independent query concurrently, then commit in order."""
@@ -545,7 +553,8 @@ class ResearchCrawler:
                         source_request_id=progress.first_request_id,
                     )
                 )
-            self._save_state("running")
+            self._mark_state_dirty()
+        self._commit_state("running")
         if blocked is not None:
             raise blocked
         if first_error is not None:
@@ -654,7 +663,8 @@ class ResearchCrawler:
         )
         if first_error is None:
             first_error = classification_error
-        self._save_state("running")
+        self._mark_state_dirty()
+        self._commit_state("running")
         if self._pending_transcript_contexts:
             self._process_pending_transcript_batch()
         if blocked is not None:
@@ -670,7 +680,7 @@ class ResearchCrawler:
         """Apply deterministic gates and build one metadata classification job."""
 
         self._evaluated_video_ids.add(discovered.video_id)
-        self._save_state("running")
+        self._mark_state_dirty()
         video = detail.video
         if video is None:
             self._record_deterministic_rejection(
@@ -826,7 +836,7 @@ class ResearchCrawler:
                 "metadata_usage": result.usage.model_dump(mode="json"),
                 "metadata_response_id": result.response_id,
             }
-            self._save_state("running")
+            self._mark_state_dirty()
             if not defer_transcript:
                 self._process_pending_transcript_batch()
         return first_error
@@ -961,7 +971,7 @@ class ResearchCrawler:
                 transcript_reserved=True,
             )
             self._pending_transcript_contexts.pop(video_id, None)
-            self._save_state("running")
+            self._mark_state_dirty()
             if result.output.decision != "relevant":
                 continue
             self._relevant_ids.add(video_id)
@@ -1006,7 +1016,7 @@ class ResearchCrawler:
             # Legacy checkpoints recorded this decision before they could save
             # the richer continuation fields.
             context["metadata_decision_recorded"] = True
-            self._save_state("running")
+            self._mark_state_dirty()
             return
         self._record_llm_decision(
             video_id,
@@ -1017,7 +1027,7 @@ class ResearchCrawler:
             transcript_reserved=True,
         )
         context["metadata_decision_recorded"] = True
-        self._save_state("running")
+        self._mark_state_dirty()
 
     def _process_pending_transcript_batch(self) -> None:
         """Dispatch checkpointed independent transcripts as one bounded batch."""
@@ -1072,7 +1082,7 @@ class ResearchCrawler:
                     )
                 )
                 reservation = None
-                self._save_state("running")
+                self._mark_state_dirty()
             if reservation is None:
                 try:
                     reservation = self.search_budget.mark_relevant(
@@ -1083,7 +1093,7 @@ class ResearchCrawler:
                     break
                 self._record_transcript_reservation(reservation)
             context["transcript_dispatch_pending"] = False
-            self._save_state("running")
+            self._mark_state_dirty()
             self._record_pending_metadata_decision(video_id)
             work.append(
                 _TranscriptDispatch(
@@ -1098,6 +1108,7 @@ class ResearchCrawler:
             )
         if not work:
             classification_error = self._classify_transcript_batch(classifications)
+            self._commit_state("running")
             if classification_error is not None:
                 raise classification_error
             if blocked is not None:
@@ -1133,7 +1144,7 @@ class ResearchCrawler:
                 final_errors.pop(video_id, None)
                 if transcript is None:
                     self._pending_transcript_contexts.pop(video_id, None)
-                    self._save_state("running")
+                    self._mark_state_dirty()
                     continue
                 classifications.append(
                     _TranscriptClassification(
@@ -1153,6 +1164,7 @@ class ResearchCrawler:
             )
             pending = retry_work
         classification_error = self._classify_transcript_batch(classifications)
+        self._commit_state("running")
         if blocked is not None:
             raise blocked
         if final_errors:
@@ -1168,9 +1180,10 @@ class ResearchCrawler:
             self._pending_transcript_contexts[item.discovered.video_id][
                 "transcript_dispatch_pending"
             ] = True
+        self._mark_state_dirty()
         # This is the checkpoint-before-provider boundary. An interruption after
         # it is conservatively treated as a potentially billed dispatch.
-        self._save_state("running")
+        self._commit_state("running", force=True)
         starts = [time.perf_counter() for _item in work]
         for item in work:
             self._emit_api_event(
@@ -1210,7 +1223,7 @@ class ResearchCrawler:
         self._pending_transcript_contexts[video_id]["transcript_dispatch_pending"] = (
             False
         )
-        self._save_state("running")
+        self._mark_state_dirty()
         return replace(item, reservation=reservation, cache_hit=cache_hit)
 
     def _apply_transcript_result(
@@ -1228,7 +1241,7 @@ class ResearchCrawler:
             self._pending_transcript_contexts[video_id][
                 "transcript_dispatch_pending"
             ] = False
-            self._save_state("running")
+            self._mark_state_dirty()
             self.writer.append(
                 ApiCallRecord(
                     run_id=self.writer.run_id,
@@ -1278,7 +1291,7 @@ class ResearchCrawler:
         self._pending_transcript_contexts[video_id]["transcript_dispatch_pending"] = (
             False
         )
-        self._save_state("running")
+        self._mark_state_dirty()
         request_id = _request_id(response)
         segments = tuple(
             TranscriptSegment(
@@ -1359,7 +1372,7 @@ class ResearchCrawler:
             return None
         self._transcript_ids.add(video_id)
         self._unavailable_transcript_ids.discard(video_id)
-        self._save_state("running")
+        self._mark_state_dirty()
         return record
 
     def _load_unavailable_transcript_ids(self) -> set[str]:
@@ -1492,7 +1505,7 @@ class ResearchCrawler:
             "channel",
             f"No videos returned for {channel.title or channel.channel_id}; skipping",
         )
-        self._save_state("running")
+        self._mark_state_dirty()
         return True
 
     def _apply_channel_response(
@@ -1528,7 +1541,7 @@ class ResearchCrawler:
         progress.pages_completed += 1
         progress.next_page_token = next_token
         progress.exhausted = not next_token or next_token == previous_token
-        self._save_state("running")
+        self._mark_state_dirty()
 
     def _enqueue_related(self, detail: Any, depth: int) -> None:
         recommended = detail.recommended_videos
@@ -1720,9 +1733,7 @@ class ResearchCrawler:
             snapshot = self.search_budget.snapshot()
         else:
             snapshot = self.search_budget.spend_discovery()
-            # A dispatched timeout is still charged locally. Checkpoint before
-            # entering the provider so resume never reopens ambiguous capacity.
-            self._save_state("running")
+            self._mark_state_dirty()
         self.writer.append(
             BudgetEventRecord(
                 run_id=self.writer.run_id,
@@ -1734,6 +1745,9 @@ class ResearchCrawler:
                 purpose=f"{operation}:cache_hit" if cache_hit else operation,
             )
         )
+        # A dispatched timeout is still charged locally. Commit the complete
+        # current frontier and charge before entering the provider.
+        self._commit_state("running", force=True)
         started = time.perf_counter()
         self._emit_api_event(
             RuntimeEvent(
@@ -1860,9 +1874,7 @@ class ResearchCrawler:
                     snapshot = self.search_budget.snapshot()
                 else:
                     snapshot = self.search_budget.spend_discovery()
-                    # Every dispatched request is durably charged before the
-                    # provider sees any member of the batch.
-                    self._save_state("running")
+                    self._mark_state_dirty()
             except BudgetExceededError as exc:
                 blocked = exc
                 break
@@ -1879,6 +1891,12 @@ class ResearchCrawler:
             )
             prepared.append(request)
             cache_hits.append(cache_hit)
+        if not prepared:
+            return [], blocked
+        # Charge and checkpoint the whole attempt once. No provider member is
+        # dispatched until every prepared request is durably represented.
+        self._commit_state("running", force=True)
+        for cache_hit in cache_hits:
             started.append(time.perf_counter())
             self._emit_api_event(
                 RuntimeEvent(
@@ -1888,8 +1906,6 @@ class ResearchCrawler:
                     cache_hit=cache_hit,
                 )
             )
-        if not prepared:
-            return [], blocked
         try:
             results = list(call(prepared))
         except Exception as exc:
@@ -2268,8 +2284,15 @@ class ResearchCrawler:
         self._stop_reason = state.stop_reason
         self._planned_records_written = state.planned_records_written
 
-    def _save_state(self, last_status: str) -> None:
-        if self.state_store is None:
+    def _mark_state_dirty(self) -> None:
+        """Record that the next checkpoint must include in-memory mutations."""
+
+        self._checkpoint_dirty = True
+
+    def _commit_state(self, last_status: str, *, force: bool = False) -> None:
+        """Atomically persist all accumulated mutations at a safe boundary."""
+
+        if self.state_store is None or (not force and not self._checkpoint_dirty):
             return
         budget_state = BudgetState.model_validate(self.search_budget.export_state())
         state = CrawlProjectState(
@@ -2324,6 +2347,7 @@ class ResearchCrawler:
             planned_records_written=self._planned_records_written,
         )
         self.state_store.save(state)
+        self._checkpoint_dirty = False
         self._publish_crawl_progress()
 
     def _publish_crawl_progress(self) -> None:

@@ -372,6 +372,16 @@ class CachedBatchSearchApi:
         return responses
 
 
+class CountingProjectStateStore(ProjectStateStore):
+    def __init__(self, project_dir) -> None:
+        super().__init__(project_dir)
+        self.save_count = 0
+
+    def save(self, state) -> None:
+        self.save_count += 1
+        super().save(state)
+
+
 def make_crawler(
     tmp_path,
     api: FakeSearchApi,
@@ -824,6 +834,42 @@ def test_discovery_batch_retries_only_failed_members(monkeypatch, tmp_path) -> N
     assert all(not isinstance(result, Exception) for result in results)
     assert calls == [["video-1", "video-2"], ["video-1"]]
     assert budget.snapshot().discovery_spent == 3
+
+
+def test_discovery_batch_checkpoints_all_charges_once_before_dispatch(tmp_path) -> None:
+    budget = SearchApiCreditBudget(8, 2)
+    state_store = CountingProjectStateStore(tmp_path / "coalesced-checkpoint")
+    crawler = make_crawler(
+        tmp_path,
+        FakeSearchApi(),
+        search_budget=budget,
+        state_store=state_store,
+    )
+    state_store.save_count = 0
+    observed_spend: list[int] = []
+    observed_writes: list[int] = []
+
+    def dispatch(requests):
+        observed_spend.append(state_store.load().budget.discovery_spent)
+        observed_writes.append(state_store.save_count)
+        return [youtube_video.SearchResponse() for _request in requests]
+
+    results, blocked = crawler._discovery_batch_attempt(
+        "youtube_video",
+        "youtube_video",
+        [
+            {"video_id": "video-1"},
+            {"video_id": "video-2"},
+            {"video_id": "video-3"},
+        ],
+        dispatch,
+    )
+
+    assert blocked is None
+    assert len(results) == 3
+    assert observed_spend == [3]
+    assert observed_writes == [1]
+    assert state_store.save_count == 1
 
 
 def test_single_discovery_retry_is_separately_charged(monkeypatch, tmp_path) -> None:

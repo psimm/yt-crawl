@@ -127,6 +127,24 @@ def test_checkpoint_uses_configured_parallelism_defaults(tmp_path) -> None:
     assert state.llm_workers == DEFAULT_LLM_WORKERS
 
 
+def test_checkpoint_replace_failure_preserves_previous_state(
+    monkeypatch, tmp_path
+) -> None:
+    project = tmp_path / "atomic-checkpoint"
+    original = _checkpoint(project)
+    updated = original.model_copy(update={"last_status": "running"})
+
+    def fail_replace(_source, _destination) -> None:
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("yt_searchapi.state.os.replace", fail_replace)
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        ProjectStateStore(project).save(updated)
+
+    assert ProjectStateStore(project).load() == original
+
+
 def test_help_does_not_require_credentials_or_make_queries() -> None:
     result = CliRunner().invoke(app, ["--help"])
 
