@@ -398,7 +398,7 @@ class ClassifierTests(unittest.TestCase):
             },
         )
 
-    def test_unknown_language_requires_null_detected_language(self) -> None:
+    def test_unknown_language_discards_contradictory_detected_language(self) -> None:
         client = FakeClient(
             {
                 "decision": "irrelevant",
@@ -414,12 +414,29 @@ class ClassifierTests(unittest.TestCase):
             discovery_reference="seed-video",
         )
 
-        with self.assertRaisesRegex(ValueError, "detected_language=None"):
-            RelevanceClassifier(client).classify(
-                candidate,
-                compile_classifier_prompt(sample_brief(), sample_expansion()),
-                stage="metadata",
-            )
+        decision = RelevanceClassifier(client).classify(
+            candidate,
+            compile_classifier_prompt(sample_brief(), sample_expansion()),
+            stage="metadata",
+        )
+
+        self.assertEqual(decision.language_match, "unknown")
+        self.assertIsNone(decision.detected_language)
+
+    def test_legacy_unknown_language_discards_contradictory_detected_language(
+        self,
+    ) -> None:
+        decision = compact_relevance_decision(
+            {
+                "decision": "irrelevant",
+                "language_match": "unknown",
+                "detected_language": "de",
+                "primary_reason": "insufficient_evidence",
+            },
+            requested_language="de",
+        )
+
+        self.assertIsNone(decision.detected_language)
 
     def test_prompt_contains_no_non_binary_decision_or_retired_score(self) -> None:
         prompt = compile_classifier_prompt(sample_brief(), sample_expansion())

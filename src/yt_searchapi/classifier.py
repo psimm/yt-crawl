@@ -146,6 +146,7 @@ class RelevanceClassifier:
             if isinstance(parsed, RelevanceDecision)
             else RelevanceDecision.model_validate(parsed)
         )
+        decision = _normalize_decision_consistency(decision)
         _validate_decision_consistency(decision)
         return LlmCallResult(
             output=decision,
@@ -225,6 +226,22 @@ def _validate_decision_consistency(
         raise ValueError("Irrelevant decisions cannot use primary_reason='topic_match'")
 
 
+def _normalize_decision_consistency(
+    decision: RelevanceDecision,
+) -> RelevanceDecision:
+    """Repair the one harmless language-field contradiction models emit.
+
+    ``language_match='unknown'`` means the model did not have enough reliable
+    language evidence. A simultaneously supplied code is therefore not
+    auditable evidence and must not turn an otherwise usable decision into a
+    failed crawl item.
+    """
+
+    if decision.language_match == "unknown" and decision.detected_language is not None:
+        return decision.model_copy(update={"detected_language": None})
+    return decision
+
+
 def compact_relevance_decision(
     value: RelevanceDecision | dict[str, Any],
     *,
@@ -258,6 +275,7 @@ def compact_relevance_decision(
             [requested_parts[0].lower(), *requested_parts[1:]]
         )
         decision = RelevanceDecision.model_validate(compact)
+    decision = _normalize_decision_consistency(decision)
     _validate_decision_consistency(decision)
     return decision
 
