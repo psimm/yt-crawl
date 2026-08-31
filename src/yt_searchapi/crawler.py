@@ -66,7 +66,12 @@ from yt_searchapi.records import (
     TranscriptSegment,
     VideoCandidateRecord,
 )
-from yt_searchapi.runtime_events import RuntimeEvent, RuntimeEventCallback
+from yt_searchapi.runtime_events import (
+    CrawlProgressCallback,
+    CrawlProgressSnapshot,
+    RuntimeEvent,
+    RuntimeEventCallback,
+)
 from yt_searchapi.settings import (
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
@@ -222,6 +227,7 @@ class ResearchCrawler:
         writer: JsonlRunWriter,
         on_progress: ProgressCallback | None = None,
         on_api_event: RuntimeEventCallback | None = None,
+        on_crawl_progress: CrawlProgressCallback | None = None,
         state_store: ProjectStateStore | None = None,
         resume_state: CrawlProjectState | None = None,
     ) -> None:
@@ -235,6 +241,7 @@ class ResearchCrawler:
         self.writer = writer
         self.on_progress = on_progress or (lambda _stage, _message: None)
         self.on_api_event = on_api_event or (lambda _event: None)
+        self.on_crawl_progress = on_crawl_progress or (lambda _snapshot: None)
         self.state_store = state_store
 
         self._video_queue: deque[_DiscoveredVideo] = deque()
@@ -245,6 +252,7 @@ class ResearchCrawler:
         self._finalized_video_ids: set[str] = set()
         self._dispositioned_video_ids: set[str] = set()
         self._terminal_video_ids: set[str] = set()
+        self._dashboard_pending_video_ids: set[str] = set()
         self._deferred_video_ids: set[str] = set()
         self._expanded_channel_ids: set[str] = set()
         self._planned_queries = self._build_query_plan()
@@ -1568,6 +1576,14 @@ class ResearchCrawler:
         previous = self._discovered_videos.get(video_id)
         if previous is None or discovered.depth < previous.depth:
             self._discovered_videos[video_id] = discovered
+        current = self._discovered_videos[video_id]
+        if (
+            current.depth <= self.config.max_depth
+            and video_id not in self._terminal_video_ids
+        ):
+            self._dashboard_pending_video_ids.add(video_id)
+        else:
+            self._dashboard_pending_video_ids.discard(video_id)
         self.writer.append(
             DiscoveryEdgeRecord(
                 run_id=self.writer.run_id,
@@ -1995,7 +2011,13 @@ class ResearchCrawler:
         self._dispositioned_video_ids.add(video_id)
         if label in {RelevanceLabel.RELEVANT, RelevanceLabel.IRRELEVANT}:
             self._finalized_video_ids.add(video_id)
-            self._terminal_video_ids.add(video_id)
+            self._mark_video_terminal(video_id)
+
+    def _mark_video_terminal(self, video_id: str) -> None:
+        """Keep terminal scheduling state and dashboard pending state aligned."""
+
+        self._terminal_video_ids.add(video_id)
+        self._dashboard_pending_video_ids.discard(video_id)
 
     def _record_deterministic_rejection(
         self,
@@ -2026,7 +2048,7 @@ class ResearchCrawler:
         )
         self._dispositioned_video_ids.add(video_id)
         self._finalized_video_ids.add(video_id)
-        self._terminal_video_ids.add(video_id)
+        self._mark_video_terminal(video_id)
 
     def _record_error_disposition(
         self,
@@ -2057,7 +2079,7 @@ class ResearchCrawler:
         )
         self._dispositioned_video_ids.add(video_id)
         if terminal:
-            self._terminal_video_ids.add(video_id)
+            self._mark_video_terminal(video_id)
 
     def _record_budget_deferred_videos(self) -> None:
         self._record_unprocessed_videos(
@@ -2096,7 +2118,7 @@ class ResearchCrawler:
             if label is RelevanceLabel.DEFERRED_BUDGET:
                 self._deferred_video_ids.add(video_id)
             else:
-                self._terminal_video_ids.add(video_id)
+                self._mark_video_terminal(video_id)
 
     def _record_error(
         self,
@@ -2220,6 +2242,12 @@ class ResearchCrawler:
         self._finalized_video_ids = set(state.finalized_video_ids)
         self._dispositioned_video_ids = set(state.dispositioned_video_ids)
         self._terminal_video_ids = set(state.terminal_video_ids)
+        self._dashboard_pending_video_ids = {
+            video_id
+            for video_id, video in self._discovered_videos.items()
+            if video.depth <= self.config.max_depth
+            and video_id not in self._terminal_video_ids
+        }
         self._deferred_video_ids = set(state.deferred_video_ids)
         self._relevant_ids = set(state.relevant_ids)
         self._transcript_ids = set(state.transcript_ids)
@@ -2296,6 +2324,42 @@ class ResearchCrawler:
             planned_records_written=self._planned_records_written,
         )
         self.state_store.save(state)
+        self._publish_crawl_progress()
+
+    def _publish_crawl_progress(self) -> None:
+        queries_planned = min(self.config.max_queries, len(self._planned_queries))
+        queries_started = sum(
+            progress.pages_completed > 0 for progress in self._query_progress.values()
+        )
+        queries_done = sum(
+            progress.exhausted
+            or progress.pages_completed >= self.config.max_search_pages
+            for progress in self._query_progress.values()
+        )
+        channels_done = sum(
+            progress.exhausted
+            or progress.pages_completed >= self.config.max_channel_pages
+            for progress in self._channel_progress.values()
+        )
+        snapshot = CrawlProgressSnapshot(
+            discovered=len(self._discovered_videos),
+            evaluated=len(self._evaluated_video_ids),
+            relevant=len(self._relevant_ids),
+            transcripts=len(self._transcript_ids),
+            pending=len(self._dashboard_pending_video_ids),
+            queries_done=min(queries_done, queries_planned),
+            queries_started=min(queries_started, queries_planned),
+            queries_planned=queries_planned,
+            channels_done=channels_done,
+            channels_discovered=len(self._discovered_channels),
+        )
+        try:
+            self.on_crawl_progress(snapshot)
+        except Exception as exc:
+            logger.error(
+                "Crawl progress callback failed error_type={}",
+                type(exc).__name__,
+            )
 
     def _record_deferred_queries(self) -> None:
         for query in self._planned_queries:

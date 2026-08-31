@@ -24,7 +24,7 @@ from yt_searchapi.llm_runtime import (
     estimate_gpt56_luna_standard_cost,
 )
 from yt_searchapi.observability import logfire_link
-from yt_searchapi.runtime_events import RuntimeEvent
+from yt_searchapi.runtime_events import CrawlProgressSnapshot, RuntimeEvent
 from yt_searchapi.state import CrawlProjectState, ProjectStateStore
 
 RunMode = Literal["START NEW PROJECT", "RESUME EXISTING PROJECT"]
@@ -47,20 +47,6 @@ class ApiTotals:
     @property
     def llm_total_tokens(self) -> int:
         return self.llm_input_tokens + self.llm_output_tokens
-
-
-@dataclass(frozen=True, slots=True)
-class CrawlTotals:
-    discovered: int = 0
-    evaluated: int = 0
-    relevant: int = 0
-    transcripts: int = 0
-    pending: int = 0
-    queries_done: int = 0
-    queries_started: int = 0
-    queries_planned: int = 0
-    channels_done: int = 0
-    channels_discovered: int = 0
 
 
 def load_api_totals(project_dir: str | Path) -> ApiTotals:
@@ -118,11 +104,36 @@ def load_api_totals(project_dir: str | Path) -> ApiTotals:
     )
 
 
-class RunDashboard:
-    """Live view backed by durable state and audit files.
+def _updated_api_totals(totals: ApiTotals, event: RuntimeEvent) -> ApiTotals:
+    """Apply one completed provider event to cumulative presentation totals."""
 
-    Runtime events are used only for in-flight counts and the current task. All
-    cumulative values are reloaded from the crawler's existing persisted files.
+    if event.phase != "finished":
+        return totals
+    is_openai = event.provider == "openai"
+    is_searchapi = event.provider == "searchapi"
+    return ApiTotals(
+        llm_input_tokens=totals.llm_input_tokens
+        + (event.input_tokens if is_openai else 0),
+        llm_cached_input_tokens=totals.llm_cached_input_tokens
+        + (event.cached_input_tokens if is_openai else 0),
+        llm_cache_write_tokens=totals.llm_cache_write_tokens
+        + (event.cache_write_tokens if is_openai else 0),
+        llm_output_tokens=totals.llm_output_tokens
+        + (event.output_tokens if is_openai else 0),
+        llm_estimated_cost_usd=totals.llm_estimated_cost_usd
+        + (float(event.estimated_cost_usd or 0.0) if is_openai else 0.0),
+        llm_calls=totals.llm_calls + int(is_openai),
+        searchapi_calls=totals.searchapi_calls + int(is_searchapi),
+        cache_hits=totals.cache_hits + int(is_searchapi and event.cache_hit),
+        errors=totals.errors + int(event.status == "error"),
+    )
+
+
+class RunDashboard:
+    """Live view hydrated from durable files, then updated from runtime events.
+
+    Startup recovers cumulative values from the checkpoint and append-only audit.
+    Rendering thereafter consumes only small immutable in-memory snapshots.
     """
 
     def __init__(
@@ -163,10 +174,11 @@ class RunDashboard:
         # acquired and therefore are already active calls.
         self._active = {"searchapi": 0, "openai": 0}
         self._active_operations: dict[tuple[str, str], int] = {}
-        self._last_state: CrawlProjectState | None = None
+        self._crawl = CrawlProgressSnapshot()
         self._last_api_totals = ApiTotals()
         self._lock = threading.RLock()
         self._live: Live | None = None
+        self._hydrate_persisted()
 
     @property
     def is_started(self) -> bool:
@@ -185,11 +197,10 @@ class RunDashboard:
             if self._live is not None:
                 return
             self._started_at = monotonic()
-            self._reload_persisted()
             live = Live(
                 console=self.console,
                 get_renderable=self.render,
-                refresh_per_second=4,
+                refresh_per_second=2,
                 transient=False,
                 screen=False,
                 redirect_stdout=False,
@@ -211,20 +222,16 @@ class RunDashboard:
             live.stop()
 
     def update(self, stage: str, message: str) -> None:
-        """Update current crawler work while persisted counts catch up."""
+        """Update the current task without filesystem work or forced rendering."""
 
         with self._lock:
             self._status = "RUNNING" if stage != "preparation" else "PREPARING"
             self._activity = message
-            self._reload_persisted()
-        self._refresh()
 
     def finish(self, status: str, message: str) -> None:
         with self._lock:
             self._status = status.replace("_", " ").upper()
             self._activity = message
-            self._reload_persisted()
-        self._refresh()
 
     def set_plan_summary(self, summary: str | None) -> None:
         """Set the compact run-plan line shown for the rest of this session."""
@@ -233,12 +240,21 @@ class RunDashboard:
             self._plan_summary = (
                 summary.strip() if summary and summary.strip() else None
             )
-        self._refresh()
 
-    def on_event(self, event: RuntimeEvent) -> None:
-        """Track provider concurrency; cumulative data still comes from JSONL."""
+    def on_crawl_progress(self, snapshot: CrawlProgressSnapshot) -> None:
+        """Accept an already-aggregated crawler snapshot without filesystem work."""
 
         with self._lock:
+            self._crawl = snapshot
+
+    def on_event(self, event: RuntimeEvent) -> None:
+        """Track provider concurrency and increment cumulative API totals."""
+
+        with self._lock:
+            if event.phase == "finished":
+                self._last_api_totals = _updated_api_totals(
+                    self._last_api_totals, event
+                )
             operation_key = (event.provider, event.operation)
             if event.phase == "started":
                 if not event.cache_hit:
@@ -276,155 +292,156 @@ class RunDashboard:
 
     def render(self) -> RenderableType:
         with self._lock:
-            self._reload_persisted()
-            crawl = _crawl_totals(self._last_state)
+            crawl = self._crawl
             api = self._last_api_totals
-            budget = self.budget.snapshot()
             outstanding_searchapi = self._active["searchapi"]
-            active_searchapi = min(outstanding_searchapi, self.searchapi_concurrency)
-            queued_searchapi = max(
-                0, outstanding_searchapi - self.searchapi_concurrency
-            )
             active_openai = self._active["openai"]
-            elapsed = _format_elapsed(monotonic() - self._started_at)
-            narrow = self.console.size.width < 100
+            status = self._status
+            activity_text = self._activity
+            plan_summary = self._plan_summary
 
-            heading = Table.grid(expand=True)
-            heading.add_column(ratio=3)
-            heading.add_column(justify="right", ratio=1)
-            heading.add_row(
-                Text(str(self.project_dir), overflow="ellipsis"), self._status
-            )
-            heading.add_row("Session", elapsed)
-            header = Panel(
-                heading,
-                title=Text(self.mode, style="bold white"),
-                border_style="cyan" if self.mode.startswith("RESUME") else "green",
-                box=box.ROUNDED,
-            )
+        budget = self.budget.snapshot()
+        active_searchapi = min(outstanding_searchapi, self.searchapi_concurrency)
+        queued_searchapi = max(0, outstanding_searchapi - self.searchapi_concurrency)
+        elapsed = _format_elapsed(monotonic() - self._started_at)
+        narrow = self.console.size.width < 100
 
-            activity = Panel(
-                Text(self._activity, overflow="fold"),
-                title="Current task",
-                border_style="bright_blue",
-                box=box.ROUNDED,
-            )
+        heading = Table.grid(expand=True)
+        heading.add_column(ratio=3)
+        heading.add_column(justify="right", ratio=1)
+        heading.add_row(Text(str(self.project_dir), overflow="ellipsis"), status)
+        heading.add_row("Session", elapsed)
+        header = Panel(
+            heading,
+            title=Text(self.mode, style="bold white"),
+            border_style="cyan" if self.mode.startswith("RESUME") else "green",
+            box=box.ROUNDED,
+        )
 
-            metrics = Table.grid(expand=True, padding=(0, 1))
-            if narrow:
-                metrics.add_column()
-                metrics.add_row(
-                    "Videos  "
-                    f"discovered {crawl.discovered:,}  |  "
-                    f"evaluated {crawl.evaluated:,}"
-                )
-                metrics.add_row(
-                    "Results  "
-                    f"relevant {crawl.relevant:,}  |  "
-                    f"transcripts {crawl.transcripts:,}  "
-                    f"|  pending {crawl.pending:,}"
-                )
-                metrics.add_row(
-                    "Progress  "
-                    f"queries {crawl.queries_done:,}/{crawl.queries_planned:,} "
-                    f"({crawl.queries_started:,} started)  |  "
-                    f"channels {crawl.channels_done:,}/{crawl.channels_discovered:,}"
-                )
-            else:
-                metrics.add_column(ratio=1)
-                metrics.add_column(ratio=1)
-                metrics.add_column(ratio=1)
-                metrics.add_row(
-                    f"[bold]{crawl.discovered:,}[/] discovered\n"
-                    f"{crawl.evaluated:,} evaluated",
-                    f"[bold]{crawl.relevant:,}[/] relevant\n"
-                    f"{crawl.transcripts:,} transcripts · "
-                    f"{crawl.pending:,} pending",
-                    f"[bold]{crawl.queries_done:,}/"
-                    f"{crawl.queries_planned:,}[/] queries\n"
-                    f"{crawl.channels_done:,}/"
-                    f"{crawl.channels_discovered:,} channels",
-                )
-            metrics_panel = Panel(
-                metrics, title="Crawl", border_style="blue", box=box.ROUNDED
-            )
+        activity = Panel(
+            Text(activity_text, overflow="fold"),
+            title="Current task",
+            border_style="bright_blue",
+            box=box.ROUNDED,
+        )
 
-            spent = budget.discovery_spent + budget.transcript_spent
-            credit_text = Text()
-            credit_text.append(
-                "SearchAPI  "
-                f"grant {budget.max_credits:,}  |  spent {spent:,}  |  "
-                f"unspent across pools {budget.total_remaining:,}\n"
+        metrics = Table.grid(expand=True, padding=(0, 1))
+        if narrow:
+            metrics.add_column()
+            metrics.add_row(
+                "Videos  "
+                f"discovered {crawl.discovered:,}  |  "
+                f"evaluated {crawl.evaluated:,}"
             )
-            credit_text.append(
-                "Discovery  "
-                f"capacity {budget.discovery_capacity:,}  |  "
-                f"spent {budget.discovery_spent:,}  |  "
-                f"remaining {budget.discovery_remaining:,}\n"
+            metrics.add_row(
+                "Results  "
+                f"relevant {crawl.relevant:,}  |  "
+                f"transcripts {crawl.transcripts:,}  "
+                f"|  pending {crawl.pending:,}"
             )
-            credit_text.append(
-                "Transcript  "
-                f"capacity {budget.transcript_capacity:,}  |  "
-                f"spent {budget.transcript_spent:,}  |  "
-                f"reserved {budget.transcript_reserved:,}  |  "
-                f"remaining {budget.transcript_remaining:,}\n"
+            metrics.add_row(
+                "Progress  "
+                f"queries {crawl.queries_done:,}/{crawl.queries_planned:,} "
+                f"({crawl.queries_started:,} started)  |  "
+                f"channels {crawl.channels_done:,}/{crawl.channels_discovered:,}"
             )
-            credit_text.append_text(
-                _credit_bar(
-                    budget.total_committed,
-                    budget.max_credits,
-                    width=24 if narrow else 40,
-                )
+        else:
+            metrics.add_column(ratio=1)
+            metrics.add_column(ratio=1)
+            metrics.add_column(ratio=1)
+            metrics.add_row(
+                f"[bold]{crawl.discovered:,}[/] discovered\n"
+                f"{crawl.evaluated:,} evaluated",
+                f"[bold]{crawl.relevant:,}[/] relevant\n"
+                f"{crawl.transcripts:,} transcripts · "
+                f"{crawl.pending:,} pending",
+                f"[bold]{crawl.queries_done:,}/"
+                f"{crawl.queries_planned:,}[/] queries\n"
+                f"{crawl.channels_done:,}/"
+                f"{crawl.channels_discovered:,} channels",
             )
-            credits_panel = Panel(
-                credit_text, title="Credits", border_style="magenta", box=box.ROUNDED
-            )
+        metrics_panel = Panel(
+            metrics, title="Crawl", border_style="blue", box=box.ROUNDED
+        )
 
-            usage = Table.grid(expand=True, padding=(0, 1))
-            usage_rows = (
-                "LLM tokens  "
-                f"input {api.llm_input_tokens:,}  |  "
-                f"cached {api.llm_cached_input_tokens:,}  |  "
-                f"writes {api.llm_cache_write_tokens:,}  |  "
-                f"output {api.llm_output_tokens:,}",
-                "LLM total  "
-                f"tokens {api.llm_total_tokens:,}  |  calls {api.llm_calls:,}  |  "
-                f"Standard cost ${api.llm_estimated_cost_usd:.6f}",
-                "Requests  "
-                f"SearchAPI {active_searchapi}/{self.searchapi_concurrency}"
-                + (f" · {queued_searchapi} queued" if queued_searchapi else "")
-                + "  |  "
-                f"OpenAI {active_openai}/{self.openai_concurrency}  |  "
-                f"total {active_searchapi + active_openai}",
-                "Audit  "
-                f"SearchAPI cache hits {api.cache_hits:,}  |  "
-                f"errors {api.errors:,}",
+        spent = budget.discovery_spent + budget.transcript_spent
+        credit_text = Text()
+        credit_text.append(
+            "SearchAPI  "
+            f"grant {budget.max_credits:,}  |  spent {spent:,}  |  "
+            f"unspent across pools {budget.total_remaining:,}\n"
+        )
+        credit_text.append(
+            "Discovery  "
+            f"capacity {budget.discovery_capacity:,}  |  "
+            f"spent {budget.discovery_spent:,}  |  "
+            f"remaining {budget.discovery_remaining:,}\n"
+        )
+        credit_text.append(
+            "Transcript  "
+            f"capacity {budget.transcript_capacity:,}  |  "
+            f"spent {budget.transcript_spent:,}  |  "
+            f"reserved {budget.transcript_reserved:,}  |  "
+            f"remaining {budget.transcript_remaining:,}\n"
+        )
+        credit_text.append_text(
+            _credit_bar(
+                budget.total_committed,
+                budget.max_credits,
+                width=24 if narrow else 40,
             )
-            usage.add_column()
-            for row in usage_rows:
-                usage.add_row(row)
-            usage_panel = Panel(
-                usage, title="Runtime", border_style="cyan", box=box.ROUNDED
-            )
+        )
+        credits_panel = Panel(
+            credit_text, title="Credits", border_style="magenta", box=box.ROUNDED
+        )
 
-            footer = Table.grid(expand=True)
-            footer.add_column(no_wrap=False, overflow="fold")
-            footer.add_row(logfire_link())
-            renderables: list[RenderableType] = [header]
-            if self._plan_summary:
-                plan = Table.grid(expand=True, padding=(0, 1))
-                plan.add_column(width=4, no_wrap=True)
-                plan.add_column(no_wrap=False, overflow="fold")
-                plan.add_row(Text("Plan", style="bold cyan"), Text(self._plan_summary))
-                renderables.append(plan)
-            renderables.extend(
-                [activity, metrics_panel, credits_panel, usage_panel, footer]
-            )
-            return Group(*renderables)
+        usage = Table.grid(expand=True, padding=(0, 1))
+        usage_rows = (
+            "LLM tokens  "
+            f"input {api.llm_input_tokens:,}  |  "
+            f"cached {api.llm_cached_input_tokens:,}  |  "
+            f"writes {api.llm_cache_write_tokens:,}  |  "
+            f"output {api.llm_output_tokens:,}",
+            "LLM total  "
+            f"tokens {api.llm_total_tokens:,}  |  calls {api.llm_calls:,}  |  "
+            f"Standard cost ${api.llm_estimated_cost_usd:.6f}",
+            "Requests  "
+            f"SearchAPI {active_searchapi}/{self.searchapi_concurrency}"
+            + (f" · {queued_searchapi} queued" if queued_searchapi else "")
+            + "  |  "
+            f"OpenAI {active_openai}/{self.openai_concurrency}  |  "
+            f"total {active_searchapi + active_openai}",
+            "Audit  "
+            f"SearchAPI cache hits {api.cache_hits:,}  |  "
+            f"errors {api.errors:,}",
+        )
+        usage.add_column()
+        for row in usage_rows:
+            usage.add_row(row)
+        usage_panel = Panel(
+            usage, title="Runtime", border_style="cyan", box=box.ROUNDED
+        )
 
-    def _reload_persisted(self) -> None:
+        footer = Table.grid(expand=True)
+        footer.add_column(no_wrap=False, overflow="fold")
+        footer.add_row(logfire_link())
+        renderables: list[RenderableType] = [header]
+        if plan_summary:
+            plan = Table.grid(expand=True, padding=(0, 1))
+            plan.add_column(width=4, no_wrap=True)
+            plan.add_column(no_wrap=False, overflow="fold")
+            plan.add_row(Text("Plan", style="bold cyan"), Text(plan_summary))
+            renderables.append(plan)
+        renderables.extend(
+            [activity, metrics_panel, credits_panel, usage_panel, footer]
+        )
+        return Group(*renderables)
+
+    def _hydrate_persisted(self) -> None:
+        """Load durable totals once before live event-driven updates begin."""
+
         try:
-            self._last_state = self.state_store.load()
+            self._crawl = _crawl_totals(self.state_store.load())
         except (FileNotFoundError, OSError, ValueError):
             pass
         try:
@@ -432,22 +449,16 @@ class RunDashboard:
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
 
-    def _refresh(self) -> None:
-        with self._lock:
-            live = self._live
-        if live is not None:
-            live.refresh()
 
-
-def _crawl_totals(state: CrawlProjectState | None) -> CrawlTotals:
+def _crawl_totals(state: CrawlProjectState | None) -> CrawlProgressSnapshot:
     if state is None:
-        return CrawlTotals()
-    pending = 0
-    for video_id, video in state.discovered_videos.items():
-        if video_id in state.terminal_video_ids:
-            continue
-        if int(video.get("depth", 0)) <= state.max_depth:
-            pending += 1
+        return CrawlProgressSnapshot()
+    terminal_video_ids = set(state.terminal_video_ids)
+    pending = sum(
+        video_id not in terminal_video_ids
+        and int(video.get("depth", 0)) <= state.max_depth
+        for video_id, video in state.discovered_videos.items()
+    )
     queries_planned = min(state.max_queries, len(state.planned_queries))
     queries_started = sum(
         item.pages_completed > 0 for item in state.query_progress.values()
@@ -456,7 +467,7 @@ def _crawl_totals(state: CrawlProjectState | None) -> CrawlTotals:
         item.exhausted or item.pages_completed >= state.max_search_pages
         for item in state.query_progress.values()
     )
-    return CrawlTotals(
+    return CrawlProgressSnapshot(
         discovered=len(state.discovered_videos),
         evaluated=len(state.evaluated_video_ids),
         relevant=len(state.relevant_ids),

@@ -9,7 +9,7 @@ import yt_searchapi.run_tui as run_tui
 from yt_searchapi.budget import SearchApiCreditBudget
 from yt_searchapi.records import ApiCallRecord
 from yt_searchapi.run_tui import RunDashboard, load_api_totals
-from yt_searchapi.runtime_events import RuntimeEvent
+from yt_searchapi.runtime_events import CrawlProgressSnapshot, RuntimeEvent
 from yt_searchapi.state import (
     BudgetState,
     CrawlProjectState,
@@ -318,6 +318,83 @@ def test_runtime_events_keep_active_counts_balanced(tmp_path) -> None:
     assert dashboard._active_operations == {}
 
 
+def test_completed_events_update_api_totals_without_rescanning_audit(tmp_path) -> None:
+    project = tmp_path / "incremental-api"
+    dashboard = RunDashboard(
+        mode="START NEW PROJECT",
+        project_dir=project,
+        budget=SearchApiCreditBudget(4, 1),
+        state_store=ProjectStateStore(project),
+    )
+
+    dashboard.on_event(
+        RuntimeEvent(
+            provider="openai",
+            operation="classify",
+            phase="finished",
+            status="success",
+            input_tokens=1_000,
+            cached_input_tokens=400,
+            cache_write_tokens=100,
+            output_tokens=200,
+            estimated_cost_usd=0.0004,
+        )
+    )
+    dashboard.on_event(
+        RuntimeEvent(
+            provider="searchapi",
+            operation="youtube_video",
+            phase="finished",
+            status="cache_hit",
+            cache_hit=True,
+        )
+    )
+
+    text = _render(dashboard, 120)
+
+    assert "input 1,000" in text
+    assert "cached 400" in text
+    assert "writes 100" in text
+    assert "output 200" in text
+    assert "tokens 1,200" in text
+    assert "calls 1" in text
+    assert "Standard cost $0.000400" in text
+    assert "cache hits 1" in text
+
+
+def test_crawl_snapshot_updates_rendered_totals_without_loading_state(tmp_path) -> None:
+    project = tmp_path / "incremental-crawl"
+    dashboard = RunDashboard(
+        mode="START NEW PROJECT",
+        project_dir=project,
+        budget=SearchApiCreditBudget(4, 1),
+        state_store=ProjectStateStore(project),
+    )
+    dashboard.on_crawl_progress(
+        CrawlProgressSnapshot(
+            discovered=12,
+            evaluated=10,
+            relevant=4,
+            transcripts=5,
+            pending=2,
+            queries_done=3,
+            queries_started=4,
+            queries_planned=5,
+            channels_done=6,
+            channels_discovered=9,
+        )
+    )
+
+    text = _render(dashboard, 120)
+
+    assert "12 discovered" in text
+    assert "10 evaluated" in text
+    assert "4 relevant" in text
+    assert "5 transcripts · 2 pending" in text
+    assert "3/5 queries" in text
+    assert "6/9 channels" in text
+
+
 def test_finished_event_keeps_remaining_parallel_work_visible(tmp_path) -> None:
     project = tmp_path / "overlapping-events"
     dashboard = RunDashboard(
@@ -537,7 +614,42 @@ def test_live_methods_run_only_after_releasing_dashboard_lock(
     assert probe.calls.count("refresh") == refresh_count
     dashboard.stop()
 
-    assert probe.calls == ["start", "refresh", "refresh", "refresh", "stop"]
+    assert probe.calls == ["start", "stop"]
+
+
+def test_repeated_renders_do_not_reload_checkpoint_or_api_audit(
+    monkeypatch, tmp_path
+) -> None:
+    project, budget = _saved_project(tmp_path)
+    state_store = ProjectStateStore(project)
+    state_loads = 0
+    api_loads = 0
+    original_state_load = state_store.load
+    original_api_load = run_tui.load_api_totals
+
+    def tracked_state_load():
+        nonlocal state_loads
+        state_loads += 1
+        return original_state_load()
+
+    def tracked_api_load(project_dir):
+        nonlocal api_loads
+        api_loads += 1
+        return original_api_load(project_dir)
+
+    monkeypatch.setattr(state_store, "load", tracked_state_load)
+    monkeypatch.setattr(run_tui, "load_api_totals", tracked_api_load)
+    dashboard = RunDashboard(
+        mode="RESUME EXISTING PROJECT",
+        project_dir=project,
+        budget=budget,
+        state_store=state_store,
+    )
+
+    assert (state_loads, api_loads) == (1, 1)
+    for _ in range(20):
+        dashboard.render()
+    assert (state_loads, api_loads) == (1, 1)
 
 
 def test_concurrent_finish_callbacks_return_while_dashboard_renders(tmp_path) -> None:

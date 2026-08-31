@@ -408,6 +408,7 @@ def start(
                 writer=writer,
                 on_progress=dashboard.update,
                 on_api_event=dashboard.on_event,
+                on_crawl_progress=dashboard.on_crawl_progress,
                 state_store=state_store,
             ).run()
         dashboard.finish(summary.status.value, summary.stop_reason)
@@ -794,6 +795,7 @@ def resume(
                 writer=writer,
                 on_progress=dashboard.update,
                 on_api_event=dashboard.on_event,
+                on_crawl_progress=dashboard.on_crawl_progress,
                 state_store=state_store,
                 resume_state=state,
             )

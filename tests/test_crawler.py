@@ -378,6 +378,7 @@ def make_crawler(
     *,
     config: CrawlConfig | None = None,
     on_api_event=None,
+    on_crawl_progress=None,
     search_budget: SearchApiCreditBudget | None = None,
     state_store: ProjectStateStore | None = None,
     resume_state=None,
@@ -409,6 +410,7 @@ def make_crawler(
         search_budget=search_budget or SearchApiCreditBudget(5, 2),
         writer=JsonlRunWriter(tmp_path, "run-1"),
         on_api_event=on_api_event,
+        on_crawl_progress=on_crawl_progress,
         state_store=state_store,
         resume_state=resume_state,
     )
@@ -445,6 +447,41 @@ def test_searchapi_events_balance_across_crawler_calls(tmp_path) -> None:
         "youtube_search",
     ]
     assert all(event.status in {"success", "cache_hit"} for event in finishes)
+
+
+def test_crawler_publishes_preaggregated_progress_snapshots(tmp_path) -> None:
+    snapshots = []
+    state_store = ProjectStateStore(tmp_path / "run-1")
+
+    summary = make_crawler(
+        tmp_path,
+        FakeSearchApi(),
+        on_crawl_progress=snapshots.append,
+        state_store=state_store,
+    ).run()
+
+    assert snapshots
+    latest = snapshots[-1]
+    assert latest.discovered == summary.videos_discovered
+    assert latest.evaluated == summary.videos_evaluated
+    assert latest.relevant == summary.relevant_videos
+    assert latest.transcripts == summary.transcripts_collected
+    assert latest.pending == summary.pending_videos
+    assert latest.queries_done == summary.queries_executed
+
+
+def test_crawl_progress_callback_cannot_fail_the_crawl(tmp_path) -> None:
+    def fail_callback(_snapshot) -> None:
+        raise RuntimeError("display failed")
+
+    summary = make_crawler(
+        tmp_path,
+        FakeSearchApi(),
+        on_crawl_progress=fail_callback,
+        state_store=ProjectStateStore(tmp_path / "run-1"),
+    ).run()
+
+    assert summary.status is RunStatus.COMPLETED
 
 
 def test_metadata_relevant_is_provisional_until_transcript_classification(
