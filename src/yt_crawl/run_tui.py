@@ -19,7 +19,7 @@ from rich.text import Text
 
 from yt_crawl.budget import SearchApiCreditBudget
 from yt_crawl.observability import logfire_link
-from yt_crawl.runtime_events import CrawlProgressSnapshot, RuntimeEvent
+from yt_crawl.runtime_events import CrawlProgressSnapshot, RuntimeEvent, is_llm_provider
 from yt_crawl.state import CrawlProjectState, ProjectStateStore
 
 RunMode = Literal["START NEW PROJECT", "RESUME EXISTING PROJECT", "SHOW PROJECT"]
@@ -70,7 +70,7 @@ def load_api_totals(project_dir: str | Path) -> ApiTotals:
             row = json.loads(line)
             provider = row.get("provider")
             status = row.get("status")
-            if provider == "openai":
+            if is_llm_provider(provider):
                 llm_calls += 1
             elif provider == "searchapi":
                 searchapi_calls += 1
@@ -89,10 +89,10 @@ def _updated_api_totals(totals: ApiTotals, event: RuntimeEvent) -> ApiTotals:
 
     if event.phase != "finished":
         return totals
-    is_openai = event.provider == "openai"
+    is_llm = is_llm_provider(event.provider)
     is_searchapi = event.provider == "searchapi"
     return ApiTotals(
-        llm_calls=totals.llm_calls + int(is_openai),
+        llm_calls=totals.llm_calls + int(is_llm),
         searchapi_calls=totals.searchapi_calls + int(is_searchapi),
         cache_hits=totals.cache_hits + int(is_searchapi and event.cache_hit),
         errors=totals.errors + int(event.status == "error"),
@@ -116,13 +116,13 @@ class RunDashboard:
         plan_summary: str | None = None,
         frontier: FrontierSettings | None = None,
         searchapi_concurrency: int = 1,
-        openai_concurrency: int = 1,
+        llm_concurrency: int = 1,
         console: Console | None = None,
     ) -> None:
         if searchapi_concurrency < 1:
             raise ValueError("searchapi_concurrency must be at least 1")
-        if openai_concurrency < 1:
-            raise ValueError("openai_concurrency must be at least 1")
+        if llm_concurrency < 1:
+            raise ValueError("llm_concurrency must be at least 1")
         self.mode = mode
         self.project_dir = Path(project_dir).expanduser().resolve()
         self.budget = budget
@@ -130,7 +130,7 @@ class RunDashboard:
         self._plan_summary = plan_summary.strip() if plan_summary else None
         self._frontier = frontier
         self.searchapi_concurrency = searchapi_concurrency
-        self.openai_concurrency = openai_concurrency
+        self.llm_concurrency = llm_concurrency
         self.console = console or Console()
         self._started_at = monotonic()
         self._status = "PREPARING" if mode == "START NEW PROJECT" else "RESTORING"
@@ -142,9 +142,9 @@ class RunDashboard:
         # SearchAPI events are emitted when a batch member is accepted for
         # dispatch. A batch may be larger than the client's worker pool, so
         # this stores outstanding work; render() separates active slots from
-        # queued work. OpenAI events are emitted after its semaphore is
+        # queued work. LLM events are emitted after its semaphore is
         # acquired and therefore are already active calls.
-        self._active = {"searchapi": 0, "openai": 0}
+        self._active = {"searchapi": 0, "llm": 0}
         self._active_operations: dict[tuple[str, str], int] = {}
         self._crawl = CrawlProgressSnapshot()
         self._last_api_totals = ApiTotals()
@@ -267,7 +267,7 @@ class RunDashboard:
             crawl = self._crawl
             api = self._last_api_totals
             outstanding_searchapi = self._active["searchapi"]
-            active_openai = self._active["openai"]
+            active_llm = self._active["llm"]
             status = self._status
             activity_text = self._activity
             plan_summary = self._plan_summary
@@ -386,8 +386,8 @@ class RunDashboard:
             f"SearchAPI {active_searchapi}/{self.searchapi_concurrency}"
             + (f" · {queued_searchapi} queued" if queued_searchapi else "")
             + "  |  "
-            f"OpenAI {active_openai}/{self.openai_concurrency}  |  "
-            f"total {active_searchapi + active_openai}",
+            f"LLM {active_llm}/{self.llm_concurrency}  |  "
+            f"total {active_searchapi + active_llm}",
             "Audit  "
             f"SearchAPI cache hits {api.cache_hits:,}  |  "
             f"errors {api.errors:,}",
@@ -513,7 +513,7 @@ def _credit_bar(committed: int, grant: int, *, width: int) -> Text:
 
 
 def _provider_name(event: RuntimeEvent) -> str:
-    return "SearchAPI" if event.provider == "searchapi" else "OpenAI"
+    return "SearchAPI" if event.provider == "searchapi" else "LLM"
 
 
 def _active_work(
@@ -524,17 +524,17 @@ def _active_work(
         for (provider, _operation), count in active_operations.items()
         if provider == "searchapi"
     )
-    openai_active = sum(
+    llm_active = sum(
         count
         for (provider, _operation), count in active_operations.items()
-        if provider == "openai"
+        if is_llm_provider(provider)
     )
     searchapi_active = min(searchapi_outstanding, searchapi_concurrency)
     searchapi_queued = max(0, searchapi_outstanding - searchapi_concurrency)
-    total = searchapi_active + openai_active
+    total = searchapi_active + llm_active
     work = []
     for (provider, operation), count in active_operations.items():
-        provider_name = "SearchAPI" if provider == "searchapi" else "OpenAI"
+        provider_name = "SearchAPI" if provider == "searchapi" else "LLM"
         quantity = f" ×{count}" if count > 1 else ""
         work.append(f"{provider_name}: {_humanize(operation)}{quantity}")
     queue = f" · {searchapi_queued} queued" if searchapi_queued else ""

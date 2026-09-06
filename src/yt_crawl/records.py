@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Annotated, Literal, Mapping
+from typing import Annotated, Any, Literal, Mapping
 
 from pydantic import (
     AwareDatetime,
@@ -318,7 +318,7 @@ class TranscriptRecord(RunRecordBase):
 
 class ApiCallRecord(RunRecordBase):
     record_type: Literal["api_call"] = "api_call"
-    provider: Literal["searchapi", "openai"]
+    provider: Literal["searchapi", "llm"]
     operation: str = Field(min_length=1)
     request_id: str | None = None
     status: Literal["success", "error", "cache_hit", "not_sent"]
@@ -326,6 +326,11 @@ class ApiCallRecord(RunRecordBase):
     llm_model: str | None = None
     latency_seconds: float | None = Field(default=None, ge=0)
     error: str | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _normalize_provider(cls, value: Any) -> Any:
+        return "llm" if value == "openai" else value
 
 
 class BudgetEventRecord(RunRecordBase):

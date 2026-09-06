@@ -36,7 +36,7 @@ from yt_crawl.dates import (
     parse_publication_date,
     select_transcript_name,
 )
-from yt_crawl.llm_runtime import LoggedOpenAIClient
+from yt_crawl.llm_runtime import LoggedLlmClient
 from yt_crawl.models import youtube_video
 from yt_crawl.prompts import (
     CLASSIFIER_PROMPT_VERSION,
@@ -73,6 +73,7 @@ from yt_crawl.runtime_events import (
     RuntimeEventCallback,
 )
 from yt_crawl.settings import (
+    DEFAULT_LLM_MODEL,
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
@@ -106,6 +107,8 @@ class CrawlConfig:
     searchapi_retries: int = DEFAULT_SEARCHAPI_RETRIES
     searchapi_workers: int = DEFAULT_SEARCHAPI_WORKERS
     llm_workers: int = DEFAULT_LLM_WORKERS
+    model: str = DEFAULT_LLM_MODEL
+    llm_api_base: str | None = None
 
     def __post_init__(self) -> None:
         if not self.topic_query.strip():
@@ -131,6 +134,10 @@ class CrawlConfig:
             raise ValueError("searchapi_workers must be at least 1")
         if self.llm_workers < 1:
             raise ValueError("llm_workers must be at least 1")
+        if not self.model.strip():
+            raise ValueError("model must not be blank")
+        if self.llm_api_base is not None and not self.llm_api_base.strip():
+            raise ValueError("llm_api_base must not be blank when supplied")
 
     @property
     def interface_language(self) -> str:
@@ -222,7 +229,7 @@ class ResearchCrawler:
         classifier_prompt: CompiledClassifierPrompt,
         searchapi: SearchApiClient,
         classifier: RelevanceClassifier,
-        llm_client: LoggedOpenAIClient,
+        llm_client: LoggedLlmClient,
         search_budget: SearchApiCreditBudget,
         writer: JsonlRunWriter,
         on_progress: ProgressCallback | None = None,
@@ -2306,6 +2313,8 @@ class ResearchCrawler:
             searchapi_retries=self.config.searchapi_retries,
             searchapi_workers=self.config.searchapi_workers,
             llm_workers=self.config.llm_workers,
+            model=self.config.model,
+            llm_api_base=self.config.llm_api_base,
             transcript_excerpt_chars=self.config.transcript_excerpt_chars,
             max_depth=self.config.max_depth,
             max_queries=self.config.max_queries,

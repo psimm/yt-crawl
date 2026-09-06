@@ -124,6 +124,7 @@ def test_legacy_llm_budget_records_remain_readable_but_are_not_rewritten() -> No
     call_payload["llm_output_tokens"] = 30
     parsed_call = validate_run_record(call_payload)
     assert isinstance(parsed_call, ApiCallRecord)
+    assert parsed_call.provider == "llm"
     dumped = parsed_call.model_dump()
     assert "llm_estimated_cost_usd" not in dumped
     assert "llm_input_tokens" not in dumped

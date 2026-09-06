@@ -63,6 +63,12 @@ def test_configure_uses_official_logfire_bridge_and_required_options(
         "LogfireLoggingHandler",
         lambda **_kwargs: _RecordingHandler(),
     )
+    monkeypatch.setattr(
+        observability.logfire,
+        "instrument_litellm",
+        lambda **_kwargs: None,
+        raising=False,
+    )
 
     assert observability.configure_observability() is True
     logger.info("bridged message")
@@ -118,6 +124,12 @@ def test_test_disable_switch_prevents_export(monkeypatch) -> None:
         observability.logfire,
         "LogfireLoggingHandler",
         lambda **_kwargs: _RecordingHandler(),
+    )
+    monkeypatch.setattr(
+        observability.logfire,
+        "instrument_litellm",
+        lambda **_kwargs: None,
+        raising=False,
     )
 
     assert observability.configure_observability() is True
@@ -203,22 +215,38 @@ def test_span_and_flush_failures_never_escape(monkeypatch) -> None:
         session.set_outcome("completed")
 
 
-def test_configuration_does_not_globally_instrument_openai_or_pydantic(
+def test_configuration_does_not_globally_instrument_pydantic(
     monkeypatch,
 ) -> None:
-    calls = SimpleNamespace(openai=0, pydantic=0)
-
-    def instrument_openai(*_args, **_kwargs):
-        calls.openai += 1
+    calls = SimpleNamespace(pydantic=0, litellm=0)
 
     def instrument_pydantic(*_args, **_kwargs):
         calls.pydantic += 1
 
+    def instrument_litellm(*_args, **_kwargs):
+        calls.litellm += 1
+
+    monkeypatch.setattr(observability, "_configured", False)
+    monkeypatch.delattr(
+        observability.logfire,
+        observability._LITELLM_INSTRUMENTED_ATTR,
+        raising=False,
+    )
+    monkeypatch.delenv("YT_CRAWL_DISABLE_TELEMETRY", raising=False)
     monkeypatch.setattr(
         observability.logfire,
-        "instrument_openai",
-        instrument_openai,
-        raising=False,
+        "configure",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        observability.logfire,
+        "loguru_handler",
+        lambda: _RecordingHandler(),
+    )
+    monkeypatch.setattr(
+        observability.logfire,
+        "LogfireLoggingHandler",
+        lambda **_kwargs: _RecordingHandler(),
     )
     monkeypatch.setattr(
         observability.logfire,
@@ -226,52 +254,66 @@ def test_configuration_does_not_globally_instrument_openai_or_pydantic(
         instrument_pydantic,
         raising=False,
     )
+    monkeypatch.setattr(
+        observability.logfire,
+        "instrument_litellm",
+        instrument_litellm,
+        raising=False,
+    )
 
-    # Configuration alone uses only the manual bridges above. The shared CLI
-    # factory instruments its concrete client separately.
     observability.configure_observability()
-    assert calls.openai == 0
     assert calls.pydantic == 0
+    assert calls.litellm == 1
 
 
-def test_openai_instance_instrumentation_is_configured_and_idempotent(
+def test_litellm_instrumentation_is_configured_and_idempotent(
     monkeypatch,
 ) -> None:
     calls = []
-    client = SimpleNamespace()
     monkeypatch.setattr(observability, "_configured", True)
     monkeypatch.setattr(
         observability.logfire,
-        "instrument_openai",
-        lambda value: calls.append(value),
+        "instrument_litellm",
+        lambda **_kwargs: calls.append(True),
+    )
+    monkeypatch.delattr(
+        observability.logfire,
+        observability._LITELLM_INSTRUMENTED_ATTR,
+        raising=False,
     )
 
-    assert observability.instrument_openai_client(client) is True
-    assert observability.instrument_openai_client(client) is True
-    assert calls == [client]
+    assert observability.instrument_litellm() is True
+    assert observability.instrument_litellm() is True
+    assert calls == [True]
 
 
-def test_openai_instance_instrumentation_requires_configuration(monkeypatch) -> None:
+def test_litellm_instrumentation_requires_configuration(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(observability, "_configured", False)
     monkeypatch.setattr(
         observability.logfire,
-        "instrument_openai",
-        lambda value: calls.append(value),
+        "instrument_litellm",
+        lambda **_kwargs: calls.append(True),
     )
 
-    assert observability.instrument_openai_client(SimpleNamespace()) is False
+    assert observability.instrument_litellm() is False
     assert calls == []
 
 
-def test_openai_instance_instrumentation_failure_is_nonfatal(monkeypatch) -> None:
-    client = SimpleNamespace()
+def test_litellm_instrumentation_failure_is_nonfatal(monkeypatch) -> None:
     monkeypatch.setattr(observability, "_configured", True)
+    monkeypatch.delattr(
+        observability.logfire,
+        observability._LITELLM_INSTRUMENTED_ATTR,
+        raising=False,
+    )
     monkeypatch.setattr(
         observability.logfire,
-        "instrument_openai",
-        lambda _value: (_ for _ in ()).throw(RuntimeError("broken")),
+        "instrument_litellm",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("broken")),
     )
 
-    assert observability.instrument_openai_client(client) is False
-    assert not hasattr(client, observability._OPENAI_INSTRUMENTED_ATTR)
+    assert observability.instrument_litellm() is False
+    assert not getattr(
+        observability.logfire, observability._LITELLM_INSTRUMENTED_ATTR, False
+    )

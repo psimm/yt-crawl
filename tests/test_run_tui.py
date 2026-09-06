@@ -69,7 +69,7 @@ def _saved_project(tmp_path):
     writer.append(
         ApiCallRecord(
             run_id=project.name,
-            provider="openai",
+            provider="llm",
             operation="topic expansion",
             status="success",
             llm_model="gpt-5.6-luna",
@@ -158,7 +158,7 @@ def test_resume_dashboard_recovers_metrics_and_renders_at_common_widths(
     assert "channel pages 1" in text
     assert "LLM  calls 1" in text
     assert "SearchAPI 0/1" in text
-    assert "OpenAI 0/1" in text
+    assert "LLM 0/1" in text
     assert "cache hits 1" in text
     assert "errors 1" in text
     assert "unspent across pools 7" in text
@@ -187,7 +187,7 @@ def test_runtime_rows_stay_intact_at_common_and_wide_widths(tmp_path, width) -> 
     text = _render(dashboard, width)
 
     assert "LLM  calls 1" in text
-    assert "Requests  SearchAPI 0/1  |  OpenAI 0/1  |  total 0" in text
+    assert "Requests  SearchAPI 0/1  |  LLM 0/1  |  total 0" in text
     assert "Audit  SearchAPI cache hits 1  |  errors 1" in text
 
 
@@ -293,12 +293,12 @@ def test_runtime_events_keep_active_counts_balanced(tmp_path) -> None:
     )
 
     dashboard.on_event(
-        RuntimeEvent(provider="openai", operation="classify", phase="started")
+        RuntimeEvent(provider="llm", operation="classify", phase="started")
     )
     active = _render(dashboard, 80)
     dashboard.on_event(
         RuntimeEvent(
-            provider="openai",
+            provider="llm",
             operation="classify",
             phase="finished",
             status="error",
@@ -307,9 +307,9 @@ def test_runtime_events_keep_active_counts_balanced(tmp_path) -> None:
     )
     finished = _render(dashboard, 80)
 
-    assert "OpenAI 1/1" in active
+    assert "LLM 1/1" in active
     assert "total 1" in active
-    assert "OpenAI 0/1" in finished
+    assert "LLM 0/1" in finished
     assert "total 0" in finished
     assert dashboard._active_operations == {}
 
@@ -325,7 +325,7 @@ def test_completed_events_update_api_totals_without_rescanning_audit(tmp_path) -
 
     dashboard.on_event(
         RuntimeEvent(
-            provider="openai",
+            provider="llm",
             operation="classify",
             phase="finished",
             status="success",
@@ -393,7 +393,7 @@ def test_finished_event_keeps_remaining_parallel_work_visible(tmp_path) -> None:
         budget=SearchApiCreditBudget(8, 2),
         state_store=ProjectStateStore(project),
         searchapi_concurrency=4,
-        openai_concurrency=3,
+        llm_concurrency=3,
     )
 
     dashboard.on_event(
@@ -403,7 +403,7 @@ def test_finished_event_keeps_remaining_parallel_work_visible(tmp_path) -> None:
         RuntimeEvent(provider="searchapi", operation="youtube_video", phase="started")
     )
     dashboard.on_event(
-        RuntimeEvent(provider="openai", operation="classify", phase="started")
+        RuntimeEvent(provider="llm", operation="classify", phase="started")
     )
     dashboard.on_event(
         RuntimeEvent(
@@ -417,10 +417,10 @@ def test_finished_event_keeps_remaining_parallel_work_visible(tmp_path) -> None:
     overlapping = _render(dashboard, 80)
     assert "2 requests active" in overlapping
     assert "SearchAPI: youtube video" in overlapping
-    assert "OpenAI: classify" in overlapping
+    assert "LLM: classify" in overlapping
     assert "SearchAPI finished: youtube search" not in overlapping
     assert "SearchAPI 1/4" in overlapping
-    assert "OpenAI 1/3" in overlapping
+    assert "LLM 1/3" in overlapping
 
     dashboard.on_event(
         RuntimeEvent(
@@ -431,19 +431,19 @@ def test_finished_event_keeps_remaining_parallel_work_visible(tmp_path) -> None:
         )
     )
     one_remaining = _render(dashboard, 80)
-    assert "OpenAI: classify" in one_remaining
+    assert "LLM: classify" in one_remaining
     assert "SearchAPI finished: youtube video" not in one_remaining
 
     dashboard.on_event(
         RuntimeEvent(
-            provider="openai",
+            provider="llm",
             operation="classify",
             phase="finished",
             status="success",
         )
     )
     complete = _render(dashboard, 80)
-    assert "OpenAI finished: classify" in complete
+    assert "LLM finished: classify" in complete
     assert "total 0" in complete
 
 
@@ -455,7 +455,7 @@ def test_runtime_shows_configured_provider_concurrency(tmp_path) -> None:
         budget=SearchApiCreditBudget(4, 1),
         state_store=ProjectStateStore(project),
         searchapi_concurrency=3,
-        openai_concurrency=4,
+        llm_concurrency=4,
     )
 
     dashboard.on_event(
@@ -465,15 +465,15 @@ def test_runtime_shows_configured_provider_concurrency(tmp_path) -> None:
         RuntimeEvent(provider="searchapi", operation="search", phase="started")
     )
     dashboard.on_event(
-        RuntimeEvent(provider="openai", operation="classify", phase="started")
+        RuntimeEvent(provider="llm", operation="classify", phase="started")
     )
     dashboard.on_event(
-        RuntimeEvent(provider="openai", operation="classify", phase="started")
+        RuntimeEvent(provider="llm", operation="classify", phase="started")
     )
 
     text = _render(dashboard, 80)
     assert "SearchAPI 2/3" in text
-    assert "OpenAI 2/4" in text
+    assert "LLM 2/4" in text
 
 
 def test_runtime_caps_searchapi_active_count_and_shows_queued_work(tmp_path) -> None:
@@ -484,7 +484,7 @@ def test_runtime_caps_searchapi_active_count_and_shows_queued_work(tmp_path) -> 
         budget=SearchApiCreditBudget(4, 1),
         state_store=ProjectStateStore(project),
         searchapi_concurrency=2,
-        openai_concurrency=4,
+        llm_concurrency=4,
     )
 
     for _ in range(4):
@@ -518,7 +518,7 @@ def test_runtime_caps_searchapi_active_count_and_shows_queued_work(tmp_path) -> 
     ("argument", "message"),
     [
         ({"searchapi_concurrency": 0}, "searchapi_concurrency"),
-        ({"openai_concurrency": 0}, "openai_concurrency"),
+        ({"llm_concurrency": 0}, "llm_concurrency"),
     ],
 )
 def test_runtime_rejects_invalid_provider_concurrency(
@@ -591,11 +591,11 @@ def test_live_methods_run_only_after_releasing_dashboard_lock(
     dashboard.finish("completed", "Done")
     refresh_count = probe.calls.count("refresh")
     dashboard.on_event(
-        RuntimeEvent(provider="openai", operation="classify", phase="started")
+        RuntimeEvent(provider="llm", operation="classify", phase="started")
     )
     dashboard.on_event(
         RuntimeEvent(
-            provider="openai",
+            provider="llm",
             operation="classify",
             phase="finished",
             status="success",
@@ -650,14 +650,14 @@ def test_concurrent_finish_callbacks_return_while_dashboard_renders(tmp_path) ->
         budget=SearchApiCreditBudget(8, 2),
         state_store=ProjectStateStore(project),
         searchapi_concurrency=16,
-        openai_concurrency=16,
+        llm_concurrency=16,
     )
     request_count = 100
     started = [
         RuntimeEvent(provider="searchapi", operation="youtube_video", phase="started")
         for _index in range(request_count)
     ] + [
-        RuntimeEvent(provider="openai", operation="classify", phase="started")
+        RuntimeEvent(provider="llm", operation="classify", phase="started")
         for _index in range(request_count)
     ]
     finished = [
@@ -700,5 +700,5 @@ def test_concurrent_finish_callbacks_return_while_dashboard_renders(tmp_path) ->
     assert dashboard._active_operations == {}
     text = _render(dashboard, 80)
     assert "SearchAPI 0/16" in text
-    assert "OpenAI 0/16" in text
+    assert "LLM 0/16" in text
     assert "total 0" in text

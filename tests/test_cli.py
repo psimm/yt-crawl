@@ -16,7 +16,6 @@ from yt_crawl.budget import SearchApiCreditBudget
 from yt_crawl.cli import (
     _commit_resume_state,
     _expanded_transcript_reserve,
-    _openai_client,
     _preflight_funding,
     _resized_transcript_reserve,
     _suggested_next_command,
@@ -29,6 +28,7 @@ from yt_crawl.llm_runtime import StructuredOutputError
 from yt_crawl.prompts import CLASSIFIER_PROMPT_VERSION
 from yt_crawl.records import RunStatus
 from yt_crawl.settings import (
+    DEFAULT_LLM_MODEL,
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
@@ -83,6 +83,7 @@ def _use_noninteractive_start_defaults(monkeypatch) -> None:
         "searchapi_retries": DEFAULT_SEARCHAPI_RETRIES,
         "searchapi_workers": DEFAULT_SEARCHAPI_WORKERS,
         "llm_workers": DEFAULT_LLM_WORKERS,
+        "model": DEFAULT_LLM_MODEL,
     }
 
     def resolve(provided, _questions):
@@ -192,7 +193,7 @@ def test_legacy_missing_prompt_version_is_rejected_before_credentials(
 
     monkeypatch.setattr(
         cli,
-        "_credentials",
+        "_searchapi_key",
         lambda: (_ for _ in ()).throw(AssertionError("credentials must not run")),
     )
     result = CliRunner().invoke(app, ["resume", "--project", str(project)])
@@ -214,7 +215,7 @@ def test_prompt_hash_mismatch_is_rejected_before_credentials(
 
     monkeypatch.setattr(
         cli,
-        "_credentials",
+        "_searchapi_key",
         lambda: (_ for _ in ()).throw(AssertionError("credentials must not run")),
     )
     result = CliRunner().invoke(app, ["resume", "--project", str(project)])
@@ -244,6 +245,11 @@ def test_start_without_flags_routes_every_setting_through_interview(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "collect_missing_start_settings", stop_after_capture)
+    monkeypatch.setattr(
+        cli,
+        "Settings",
+        lambda: SimpleNamespace(searchapi_api_key=None, model=None, llm_api_base=None),
+    )
 
     result = CliRunner().invoke(app, ["start"])
 
@@ -264,11 +270,13 @@ def test_start_without_flags_routes_every_setting_through_interview(
         "searchapi_retries",
         "searchapi_workers",
         "llm_workers",
+        "model",
     }
     assert all(value is None for value in captured.values())
     assert question_defaults["searchapi_workers"] == str(DEFAULT_SEARCHAPI_WORKERS)
     assert question_defaults["searchapi_retries"] == str(DEFAULT_SEARCHAPI_RETRIES)
     assert question_defaults["llm_workers"] == str(DEFAULT_LLM_WORKERS)
+    assert question_defaults["model"] == DEFAULT_LLM_MODEL
 
 
 def test_fully_scripted_start_does_not_open_setting_prompts(
@@ -327,6 +335,8 @@ def test_fully_scripted_start_does_not_open_setting_prompts(
             "6",
             "--llm-workers",
             "3",
+            "--model",
+            "openai/gpt-5.6-luna",
         ],
     )
 
@@ -336,6 +346,7 @@ def test_fully_scripted_start_does_not_open_setting_prompts(
     assert captured["searchapi_retries"] == 2
     assert captured["searchapi_workers"] == 6
     assert captured["llm_workers"] == 3
+    assert captured["model"] == "openai/gpt-5.6-luna"
 
 
 def test_transcript_reserve_leaves_seed_and_detail_capacity() -> None:
@@ -396,33 +407,6 @@ def test_resized_transcript_reserve_moves_stranded_remaining_to_discovery() -> N
     assert discovery_remaining == 4_622
 
 
-def test_openai_client_has_bounded_timeout_and_three_sdk_retries(
-    monkeypatch,
-) -> None:
-    captured = {}
-    sentinel = object()
-    instrumented = []
-
-    def fake_openai(**kwargs):
-        captured.update(kwargs)
-        return sentinel
-
-    monkeypatch.setattr(cli, "OpenAI", fake_openai)
-    monkeypatch.setattr(
-        cli,
-        "instrument_openai_client",
-        lambda client: instrumented.append(client) or True,
-    )
-
-    assert _openai_client("test-key") is sentinel
-    assert captured == {
-        "api_key": "test-key",
-        "max_retries": 3,
-        "timeout": 90.0,
-    }
-    assert instrumented == [sentinel]
-
-
 def test_structured_preparation_error_says_crawl_did_not_spend_credits() -> None:
     error = StructuredOutputError(
         "expand_topic_queries",
@@ -473,13 +457,14 @@ def test_missing_credentials_fails_before_provider_clients(
 
     class EmptySettings:
         searchapi_api_key = None
-        openai_api_key = None
+        model = None
+        llm_api_base = None
 
     def fail(*_args, **_kwargs):
         raise AssertionError("provider client must not be constructed")
 
     monkeypatch.setattr(cli, "Settings", EmptySettings)
-    monkeypatch.setattr(cli, "_openai_client", fail)
+    monkeypatch.setattr(cli, "_llm_client", fail)
     monkeypatch.setattr(cli, "SearchApiClient", fail)
     monkeypatch.delenv("SEARCHAPI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -509,18 +494,10 @@ def test_start_opens_one_manual_session_span_with_controls(
 ) -> None:
     _use_noninteractive_start_defaults(monkeypatch)
     project = tmp_path / "start-span"
-    openai_client = SimpleNamespace()
-    instrumented = []
     _RecordingSessionSpan.calls = []
     monkeypatch.setattr(cli, "RunSessionSpan", _RecordingSessionSpan)
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-secret", "openai-secret"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-secret")
     monkeypatch.setattr(cli, "_check_searchapi_funding", lambda *_args: 100)
-    monkeypatch.setattr(cli, "OpenAI", lambda **_kwargs: openai_client)
-    monkeypatch.setattr(
-        cli,
-        "instrument_openai_client",
-        lambda client: instrumented.append(client) or True,
-    )
     monkeypatch.setattr(
         cli,
         "_prepare_research",
@@ -558,8 +535,6 @@ def test_start_opens_one_manual_session_span_with_controls(
         },
     }
     assert "search-secret" not in repr(initial)
-    assert "openai-secret" not in repr(initial)
-    assert instrumented == [openai_client]
     assert _RecordingSessionSpan.calls[-1] == ("close", None)
 
 
@@ -567,19 +542,11 @@ def test_resume_opens_one_manual_session_span_with_added_credits(
     monkeypatch, tmp_path
 ) -> None:
     project = tmp_path / "resume-span"
-    openai_client = SimpleNamespace()
-    instrumented = []
     _checkpoint(project)
     _RecordingSessionSpan.calls = []
     monkeypatch.setattr(cli, "RunSessionSpan", _RecordingSessionSpan)
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-secret", "openai-secret"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-secret")
     monkeypatch.setattr(cli, "_check_searchapi_funding", lambda *_args: 100)
-    monkeypatch.setattr(cli, "OpenAI", lambda **_kwargs: openai_client)
-    monkeypatch.setattr(
-        cli,
-        "instrument_openai_client",
-        lambda client: instrumented.append(client) or True,
-    )
     monkeypatch.setattr(
         cli,
         "SearchApiClient",
@@ -610,8 +577,6 @@ def test_resume_opens_one_manual_session_span_with_added_credits(
         },
     }
     assert "search-secret" not in repr(initial)
-    assert "openai-secret" not in repr(initial)
-    assert instrumented == [openai_client]
     assert _RecordingSessionSpan.calls[-1] == ("close", None)
 
 
@@ -626,7 +591,7 @@ def test_start_explains_recovery_when_preparation_has_no_checkpoint(
     def fail():
         raise AssertionError("credentials must not be read")
 
-    monkeypatch.setattr(cli, "_credentials", fail)
+    monkeypatch.setattr(cli, "_searchapi_key", fail)
     result = CliRunner().invoke(
         app,
         [
@@ -702,7 +667,7 @@ def test_resume_rejects_later_start_date_before_credentials(
 
     monkeypatch.setattr(
         cli,
-        "_credentials",
+        "_searchapi_key",
         lambda: (_ for _ in ()).throw(AssertionError("credentials must not run")),
     )
     result = CliRunner().invoke(
@@ -788,7 +753,7 @@ def test_underfunded_start_does_not_create_project_or_log(
 ) -> None:
     _use_noninteractive_start_defaults(monkeypatch)
     project = tmp_path / "underfunded"
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-key")
 
     def reject(*_args):
         raise cli.typer.BadParameter("account is underfunded")
@@ -1136,7 +1101,7 @@ def test_completed_project_rejects_credits_only_before_funding(
     def fail(*_args, **_kwargs):
         raise AssertionError("funding and provider setup must not run")
 
-    monkeypatch.setattr(cli, "_credentials", fail)
+    monkeypatch.setattr(cli, "_searchapi_key", fail)
     monkeypatch.setattr(cli, "_preflight_funding", fail)
     result = CliRunner().invoke(
         app,
@@ -1170,7 +1135,7 @@ def test_show_prints_saved_screen_without_running(monkeypatch, tmp_path) -> None
     def fail(*_args, **_kwargs):
         raise AssertionError("show must not contact providers or mutate the project")
 
-    monkeypatch.setattr(cli, "_credentials", fail)
+    monkeypatch.setattr(cli, "_searchapi_key", fail)
     monkeypatch.setattr(cli, "_preflight_funding", fail)
     monkeypatch.setattr(cli, "_commit_resume_state", fail)
 
@@ -1261,12 +1226,14 @@ def test_completed_project_can_move_start_date_earlier_and_reopen_candidates(
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-key")
     monkeypatch.setattr(cli, "_preflight_funding", lambda *_args: 100)
     monkeypatch.setattr(
         cli,
-        "_openai_client",
-        lambda _api_key: (_ for _ in ()).throw(RuntimeError("stop after commit")),
+        "_llm_client",
+        lambda *_args, **_kwargs: (
+            _ for _ in ()
+        ).throw(RuntimeError("stop after commit")),
     )
     result = CliRunner().invoke(
         app,
@@ -1350,7 +1317,7 @@ def test_completed_project_rejects_max_queries_beyond_prepared_plan_before_fundi
     def fail(*_args, **_kwargs):
         raise AssertionError("funding and provider setup must not run")
 
-    monkeypatch.setattr(cli, "_credentials", fail)
+    monkeypatch.setattr(cli, "_searchapi_key", fail)
     monkeypatch.setattr(cli, "_preflight_funding", fail)
     result = CliRunner().invoke(
         app,
@@ -1386,7 +1353,7 @@ def test_resume_funding_excludes_pending_reservations(monkeypatch, tmp_path) -> 
     ProjectStateStore(project).save(state)
     allowances = []
 
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-key")
 
     def capture_allowance(_api_key, allowance, *_runtime):
         allowances.append(allowance)
@@ -1424,7 +1391,7 @@ def test_resume_rejects_set_credits_with_add_credits(tmp_path, monkeypatch) -> N
     def fail(*_args, **_kwargs):
         raise AssertionError("conflicting credit flags must fail before funding")
 
-    monkeypatch.setattr(cli, "_credentials", fail)
+    monkeypatch.setattr(cli, "_searchapi_key", fail)
     monkeypatch.setattr(cli, "_preflight_funding", fail)
     result = CliRunner().invoke(
         app,
@@ -1450,7 +1417,7 @@ def test_resume_set_credits_overwrites_remaining_after_funding(
     project = tmp_path / "set-credits"
     _spent_checkpoint(project)
     allowances = []
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-key")
 
     def capture_allowance(_api_key, allowance, *_runtime):
         allowances.append(allowance)
@@ -1459,8 +1426,10 @@ def test_resume_set_credits_overwrites_remaining_after_funding(
     monkeypatch.setattr(cli, "_preflight_funding", capture_allowance)
     monkeypatch.setattr(
         cli,
-        "_openai_client",
-        lambda _api_key: (_ for _ in ()).throw(RuntimeError("stop after commit")),
+        "_llm_client",
+        lambda *_args, **_kwargs: (
+            _ for _ in ()
+        ).throw(RuntimeError("stop after commit")),
     )
 
     result = CliRunner().invoke(
@@ -1488,7 +1457,7 @@ def test_resume_set_credits_can_raise_remaining_after_funding(
     project = tmp_path / "set-credits-up"
     _spent_checkpoint(project)
     allowances = []
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-key")
 
     def capture_allowance(_api_key, allowance, *_runtime):
         allowances.append(allowance)
@@ -1497,8 +1466,10 @@ def test_resume_set_credits_can_raise_remaining_after_funding(
     monkeypatch.setattr(cli, "_preflight_funding", capture_allowance)
     monkeypatch.setattr(
         cli,
-        "_openai_client",
-        lambda _api_key: (_ for _ in ()).throw(RuntimeError("stop after commit")),
+        "_llm_client",
+        lambda *_args, **_kwargs: (
+            _ for _ in ()
+        ).throw(RuntimeError("stop after commit")),
     )
 
     result = CliRunner().invoke(
@@ -1522,7 +1493,7 @@ def test_resume_set_credits_can_raise_remaining_after_funding(
 def test_underfunded_set_credits_does_not_commit(monkeypatch, tmp_path) -> None:
     project = tmp_path / "set-credits-underfunded"
     _spent_checkpoint(project)
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-key")
 
     def reject(_api_key, allowance, *_runtime):
         raise cli.typer.BadParameter(f"account is underfunded for {allowance} credits")
@@ -1556,13 +1527,13 @@ def test_resume_records_a_fully_transferred_grant(
         completed_video_ids=["video-1", "video-2", "video-3", "video-4"],
     )
     ProjectStateStore(project).save(state)
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-key")
     monkeypatch.setattr(cli, "_preflight_funding", lambda *_args: 100)
 
-    def fail_after_record(_api_key):
+    def fail_after_record(*_args, **_kwargs):
         raise RuntimeError("stop after resume record")
 
-    monkeypatch.setattr(cli, "_openai_client", fail_after_record)
+    monkeypatch.setattr(cli, "_llm_client", fail_after_record)
 
     result = CliRunner().invoke(
         app,
@@ -1582,7 +1553,7 @@ def test_resume_commits_grant_and_controls_before_provider_setup(
     project = tmp_path / "complete"
     _checkpoint(project, status="completed")
 
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-key")
     funding_workers = []
 
     def funded(*args):
@@ -1592,7 +1563,7 @@ def test_resume_commits_grant_and_controls_before_provider_setup(
     monkeypatch.setattr(cli, "_preflight_funding", funded)
     setup_attempts = 0
 
-    def fail_after_commit(_api_key):
+    def fail_after_commit(*_args, **_kwargs):
         nonlocal setup_attempts
         setup_attempts += 1
         committed = ProjectStateStore(project).load()
@@ -1611,7 +1582,7 @@ def test_resume_commits_grant_and_controls_before_provider_setup(
         assert f'"llm_workers":{DEFAULT_LLM_WORKERS + 1}' in audit
         raise RuntimeError("provider setup failed")
 
-    monkeypatch.setattr(cli, "_openai_client", fail_after_commit)
+    monkeypatch.setattr(cli, "_llm_client", fail_after_commit)
     result = CliRunner().invoke(
         app,
         [
@@ -1700,7 +1671,7 @@ def test_resume_dashboard_start_failure_is_durably_recorded(
             stops.append("stopped")
             self.is_started = False
 
-    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+    monkeypatch.setattr(cli, "_searchapi_key", lambda: "search-key")
     monkeypatch.setattr(cli, "_preflight_funding", lambda *_args: 100)
     monkeypatch.setattr(cli, "RunDashboard", FailingDashboard)
 
@@ -1795,7 +1766,7 @@ def test_plan_summaries_are_compact_and_show_only_resume_changes(tmp_path) -> No
         "Resume plan · grant +0 → 4 · frontier unchanged · "
         f"SearchAPI retries {DEFAULT_SEARCHAPI_RETRIES} → 1 · "
         f"SearchAPI workers {DEFAULT_SEARCHAPI_WORKERS} → "
-        f"{DEFAULT_SEARCHAPI_WORKERS - 1} · OpenAI workers "
+        f"{DEFAULT_SEARCHAPI_WORKERS - 1} · LLM workers "
         f"{DEFAULT_LLM_WORKERS} → {DEFAULT_LLM_WORKERS + 1}"
     )
     assert cli._resume_plan_summary(

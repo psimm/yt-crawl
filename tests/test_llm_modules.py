@@ -116,7 +116,6 @@ class PromptTests(unittest.TestCase):
         self.assertIs(call["text_format"], TopicExpansion)
         request = json.loads(call["input"])
         self.assertEqual(request["topic_query"], sample_brief().topic_query)
-        self.assertEqual(call["prompt_cache_options"], {"mode": "explicit"})
 
     def test_expansion_forbids_unknown_fields(self) -> None:
         payload = sample_expansion().model_dump()
@@ -151,12 +150,8 @@ class InterviewTests(unittest.TestCase):
 
         self.assertEqual(result, suggestions)
         (call,) = client.responses.calls
-        self.assertEqual(call["model"], "gpt-5.6-luna")
+        self.assertEqual(call["model"], DEFAULT_LLM_MODEL)
         self.assertIs(call["text_format"], InterviewSuggestions)
-        self.assertEqual(call["prompt_cache_options"], {"mode": "explicit"})
-        self.assertNotIn("prompt_cache_key", call)
-        self.assertNotIn("prompt_cache_breakpoint", call["instructions"])
-        self.assertNotIn("prompt_cache_breakpoint", call["input"])
 
     def test_interview_preserves_verbatim_user_examples(self) -> None:
         suggestions = sample_suggestions()
@@ -242,26 +237,14 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(call["model"], DEFAULT_LLM_MODEL)
         self.assertIs(call["text_format"], RelevanceDecision)
         self.assertNotIn("instructions", call)
-        self.assertEqual(call["prompt_cache_options"], {"mode": "explicit"})
-        self.assertEqual(call["prompt_cache_key"], prompt.prompt_sha256)
         self.assertEqual(call["input"][0]["role"], "developer")
         stable = call["input"][0]["content"][0]
         self.assertEqual(stable["text"], prompt.system_prompt)
-        self.assertEqual(
-            stable["prompt_cache_breakpoint"],
-            {"mode": "explicit"},
-        )
         self.assertEqual(call["input"][1]["role"], "user")
         request = json.loads(call["input"][1]["content"][0]["text"])
         self.assertEqual(request["classification_stage"], "transcript")
         self.assertEqual(request["candidate"]["video_id"], "abc123")
         self.assertNotIn("published_at", request["candidate"])
-        markers = sum(
-            "prompt_cache_breakpoint" in block
-            for message in call["input"]
-            for block in message["content"]
-        )
-        self.assertEqual(markers, 1)
 
     def test_classifier_exposes_bounded_ordered_batch_hook(self) -> None:
         decision = RelevanceDecision(

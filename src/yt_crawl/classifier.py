@@ -70,7 +70,7 @@ class _OpenAIClient(Protocol):
 
 
 class RelevanceClassifier:
-    """Classify candidates using an injected OpenAI-compatible client."""
+    """Classify candidates using an injected LLM client."""
 
     def __init__(
         self,
@@ -122,7 +122,6 @@ class RelevanceClassifier:
                         {
                             "type": "input_text",
                             "text": prompt.system_prompt,
-                            "prompt_cache_breakpoint": {"mode": "explicit"},
                         }
                     ],
                 },
@@ -131,11 +130,6 @@ class RelevanceClassifier:
                     "content": [{"type": "input_text", "text": candidate_json}],
                 },
             ],
-            # Disable GPT-5.6's automatic suffix checkpoint. Only the fixed
-            # developer instructions and labeled examples above are cacheable;
-            # the video-specific user content is never part of a cache write.
-            prompt_cache_options={"mode": "explicit"},
-            prompt_cache_key=prompt.prompt_sha256,
             text_format=RelevanceDecision,
         )
         parsed = getattr(response, "output_parsed", None)

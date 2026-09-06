@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from yt_crawl.classifier import compact_relevance_decision
 from yt_crawl.prompts import CLASSIFIER_PROMPT_VERSION
 from yt_crawl.settings import (
+    DEFAULT_LLM_MODEL,
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
@@ -75,6 +76,8 @@ class CrawlProjectState(StateModel):
     searchapi_retries: int = Field(default=DEFAULT_SEARCHAPI_RETRIES, ge=0, le=5)
     searchapi_workers: int = Field(default=DEFAULT_SEARCHAPI_WORKERS, ge=1)
     llm_workers: int = Field(default=DEFAULT_LLM_WORKERS, ge=1)
+    model: str = Field(default=DEFAULT_LLM_MODEL, min_length=1)
+    llm_api_base: str | None = None
     transcript_excerpt_chars: int
     max_depth: int = Field(ge=0)
     max_queries: int = Field(ge=1)

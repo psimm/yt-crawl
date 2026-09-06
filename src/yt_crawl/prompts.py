@@ -15,7 +15,8 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-DEFAULT_LLM_MODEL = "gpt-5.6-luna"
+from yt_crawl.settings import DEFAULT_LLM_MODEL
+
 CLASSIFIER_PROMPT_VERSION = "relevance-v3"
 
 
@@ -165,10 +166,6 @@ class TopicExpander:
             model=self.model,
             instructions=EXPANSION_SYSTEM_PROMPT,
             input=_canonical_json(brief.model_dump(mode="json")),
-            # GPT-5.6 otherwise adds a billable implicit cache breakpoint. This
-            # one-off prompt has no reusable prefix, so explicit mode with no
-            # marker opts it out of prompt caching.
-            prompt_cache_options={"mode": "explicit"},
             text_format=TopicExpansion,
         )
         return LlmCallResult(
@@ -278,14 +275,18 @@ def extract_usage(response: Any) -> LlmUsage:
             value = getattr(usage, name, 0)
         return int(value or 0)
 
-    input_tokens = read("input_tokens")
-    output_tokens = read("output_tokens")
+    input_tokens = read("input_tokens") or read("prompt_tokens")
+    output_tokens = read("output_tokens") or read("completion_tokens")
     total_tokens = read("total_tokens") or input_tokens + output_tokens
 
     if isinstance(usage, Mapping):
-        details = usage.get("input_tokens_details")
+        details = usage.get("input_tokens_details") or usage.get(
+            "prompt_tokens_details"
+        )
     else:
-        details = getattr(usage, "input_tokens_details", None)
+        details = getattr(usage, "input_tokens_details", None) or getattr(
+            usage, "prompt_tokens_details", None
+        )
 
     def read_detail(name: str) -> int:
         if isinstance(details, Mapping):

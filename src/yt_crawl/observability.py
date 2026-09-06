@@ -21,7 +21,7 @@ _quiet_warning_handler = logging.NullHandler()
 _quiet_app_handler = logging.NullHandler()
 _logfire_warning_handler: logging.Handler | None = None
 _configured = False
-_OPENAI_INSTRUMENTED_ATTR = "_yt_crawl_logfire_instrumented"
+_LITELLM_INSTRUMENTED_ATTR = "_yt_crawl_logfire_litellm_instrumented"
 
 
 def _quiet_terminal_logging() -> None:
@@ -75,6 +75,7 @@ def configure_observability() -> bool:
         _WARNING_LOGGER.addHandler(warning_handler)
         _APP_LOGGER.addHandler(warning_handler)
         _configured = True
+        instrument_litellm()
     except Exception:
         # Observability must never determine whether research can proceed.
         logger.remove()
@@ -86,27 +87,20 @@ def configure_observability() -> bool:
     return _configured
 
 
-def instrument_openai_client(client: Any) -> bool:
-    """Best-effort Logfire instrumentation for one configured OpenAI client.
-
-    Instrumenting the concrete instance avoids changing unrelated OpenAI
-    clients. Both this helper and Logfire mark the client, so repeating the
-    call for the same instance is harmless.
-    """
+def instrument_litellm() -> bool:
+    """Best-effort process-level Logfire instrumentation for LiteLLM."""
 
     if not _configured:
         return False
-    if getattr(client, _OPENAI_INSTRUMENTED_ATTR, False):
+    if getattr(logfire, _LITELLM_INSTRUMENTED_ATTR, False):
         return True
     try:
-        logfire.instrument_openai(client)
+        logfire.instrument_litellm()
     except Exception:
-        # Telemetry must never determine whether research can proceed.
         return False
     try:
-        setattr(client, _OPENAI_INSTRUMENTED_ATTR, True)
+        setattr(logfire, _LITELLM_INSTRUMENTED_ATTR, True)
     except Exception:
-        # Logfire itself also makes repeated instrumentation idempotent.
         pass
     return True
 
@@ -215,7 +209,7 @@ __all__ = [
     "LOGFIRE_URL",
     "RunSessionSpan",
     "configure_observability",
-    "instrument_openai_client",
+    "instrument_litellm",
     "logfire_link",
     "print_logfire_link",
 ]

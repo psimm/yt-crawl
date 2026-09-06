@@ -157,7 +157,6 @@ class InterviewPlanner:
                 sort_keys=True,
                 separators=(",", ":"),
             ),
-            prompt_cache_options={"mode": "explicit"},
             text_format=InterviewSuggestions,
         )
         parsed = getattr(response, "output_parsed", None)

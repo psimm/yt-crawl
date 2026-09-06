@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-Provider = Literal["searchapi", "openai"]
+Provider = Literal["searchapi", "llm"]
 RuntimeEventPhase = Literal["started", "finished"]
 RuntimeEventStatus = Literal["success", "error", "cache_hit"]
 
@@ -45,9 +45,14 @@ RuntimeEventCallback = Callable[[RuntimeEvent], None]
 CrawlProgressCallback = Callable[[CrawlProgressSnapshot], None]
 
 
+def is_llm_provider(provider: str | None) -> bool:
+    return provider in {"llm", "openai"}
+
+
 __all__ = [
     "CrawlProgressCallback",
     "CrawlProgressSnapshot",
     "RuntimeEvent",
     "RuntimeEventCallback",
+    "is_llm_provider",
 ]

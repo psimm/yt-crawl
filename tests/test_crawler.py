@@ -1174,7 +1174,7 @@ def test_dashboard_caps_queued_searchapi_batch_at_provider_limit(tmp_path) -> No
         budget=SearchApiCreditBudget(9, 4),
         state_store=ProjectStateStore(project),
         searchapi_concurrency=2,
-        openai_concurrency=4,
+        llm_concurrency=4,
         console=console,
     )
     http = httpx.Client(

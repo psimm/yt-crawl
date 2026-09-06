@@ -12,7 +12,6 @@ from typing import Annotated
 
 import typer
 from loguru import logger
-from openai import OpenAI
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -32,16 +31,14 @@ from yt_crawl.interview_ui import (
     InterviewCancelled,
     TerminalInterview,
 )
-from yt_crawl.llm_runtime import LoggedOpenAIClient, StructuredOutputError
+from yt_crawl.llm_runtime import LoggedLlmClient, StructuredOutputError
 from yt_crawl.observability import (
     RunSessionSpan,
     configure_observability,
-    instrument_openai_client,
     print_logfire_link,
 )
 from yt_crawl.prompts import (
     CLASSIFIER_PROMPT_VERSION,
-    DEFAULT_LLM_MODEL,
     CompiledClassifierPrompt,
     TopicExpander,
     TopicExpansion,
@@ -58,6 +55,7 @@ from yt_crawl.records import (
 )
 from yt_crawl.run_tui import FrontierSettings, RunDashboard
 from yt_crawl.settings import (
+    DEFAULT_LLM_MODEL,
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
@@ -68,6 +66,7 @@ from yt_crawl.start_settings_ui import (
     collect_missing_start_settings,
     float_setting,
     integer_setting,
+    text_setting,
 )
 from yt_crawl.state import (
     BudgetState,
@@ -193,7 +192,21 @@ def start(
             "--llm-workers",
             min=1,
             max=32,
-            help="Maximum concurrent OpenAI classification requests.",
+            help="Maximum concurrent LLM classification requests.",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="LiteLLM model string, for example openai/gpt-5.6-luna.",
+        ),
+    ] = None,
+    llm_api_base: Annotated[
+        str | None,
+        typer.Option(
+            "--llm-api-base",
+            help="Optional OpenAI-compatible API base URL.",
         ),
     ] = None,
 ) -> None:
@@ -230,7 +243,16 @@ def start(
             maximum=32,
             default=DEFAULT_LLM_WORKERS,
         ),
+        text_setting(
+            "model",
+            "Which LiteLLM model should classify videos?",
+            "Use a provider/model string such as openai/gpt-5.6-luna.",
+            default=DEFAULT_LLM_MODEL,
+        ),
     )
+    if topic is not None and not topic.strip():
+        raise typer.BadParameter("--topic must not be blank")
+    settings = Settings()
     try:
         resolved = collect_missing_start_settings(
             {
@@ -249,6 +271,7 @@ def start(
                 "searchapi_retries": searchapi_retries,
                 "searchapi_workers": searchapi_workers,
                 "llm_workers": llm_workers,
+                "model": model or settings.model,
             },
             (*BASE_START_SETTING_QUESTIONS, *runtime_questions),
         )
@@ -275,10 +298,16 @@ def start(
     searchapi_retries = int(resolved["searchapi_retries"])
     searchapi_workers = int(resolved["searchapi_workers"])
     llm_workers = int(resolved["llm_workers"])
+    model = str(resolved["model"]).strip()
+    if not model:
+        raise typer.BadParameter("--model must not be blank")
+    llm_api_base = llm_api_base or settings.llm_api_base
+    if llm_api_base is not None:
+        llm_api_base = llm_api_base.strip() or None
     project = Path(resolved["project"]).expanduser().resolve()
     _require_new_project(project)
     configure_observability()
-    searchapi_key, openai_key = _credentials()
+    searchapi_key = _searchapi_key()
     account_credits = _check_searchapi_funding(
         searchapi_key,
         max_credits,
@@ -312,7 +341,7 @@ def start(
             max_channel_pages=max_channel_pages,
         ),
         searchapi_concurrency=searchapi_workers,
-        openai_concurrency=llm_workers,
+        llm_concurrency=llm_workers,
         console=console,
     )
     console.print(
@@ -346,18 +375,16 @@ def start(
     preparation_started = False
     preparation_completed = False
     try:
-        # Transient SDK retries stay inside one audited logical OpenAI call.
-        openai_client = _openai_client(openai_key)
-        logged_openai = LoggedOpenAIClient(
-            openai_client,
+        logged_llm = _llm_client(
             writer,
             on_event=dashboard.on_event,
             max_concurrency=llm_workers,
+            api_base=llm_api_base,
         )
         preparation_started = True
         expansion, classifier_prompt, confirmed = _prepare_research(
             writer=writer,
-            client=logged_openai,
+            client=logged_llm,
             topic=topic,
             language_hint=language_value,
             start_date_hint=start_date_value,
@@ -374,6 +401,7 @@ def start(
             searchapi_retries=searchapi_retries,
             searchapi_workers=searchapi_workers,
             llm_workers=llm_workers,
+            model=model,
             dashboard=dashboard,
         )
         preparation_completed = True
@@ -393,6 +421,8 @@ def start(
             searchapi_retries=searchapi_retries,
             searchapi_workers=searchapi_workers,
             llm_workers=llm_workers,
+            model=model,
+            llm_api_base=llm_api_base,
         )
         dashboard.update("crawler", "Initializing the saved frontier")
         with SearchApiClient(
@@ -409,8 +439,8 @@ def start(
                 expansion=expansion,
                 classifier_prompt=classifier_prompt,
                 searchapi=searchapi,
-                classifier=RelevanceClassifier(logged_openai),
-                llm_client=logged_openai,
+                classifier=RelevanceClassifier(logged_llm, model=model),
+                llm_client=logged_llm,
                 search_budget=search_budget,
                 writer=writer,
                 on_progress=dashboard.update,
@@ -560,9 +590,23 @@ def resume(
             min=1,
             max=32,
             help=(
-                "Set the maximum concurrent OpenAI classification requests "
+                "Set the maximum concurrent LLM classification requests "
                 "for this project."
             ),
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Override the LiteLLM model string stored on this project.",
+        ),
+    ] = None,
+    llm_api_base: Annotated[
+        str | None,
+        typer.Option(
+            "--llm-api-base",
+            help="Override the optional OpenAI-compatible API base URL.",
         ),
     ] = None,
     show: Annotated[
@@ -641,6 +685,12 @@ def resume(
         state.searchapi_retries if searchapi_retries is None else searchapi_retries
     )
     effective_llm_workers = state.llm_workers if llm_workers is None else llm_workers
+    effective_model = state.model if model is None else model.strip()
+    if not effective_model:
+        raise typer.BadParameter("--model must not be blank", param_hint="--model")
+    effective_llm_api_base = (
+        state.llm_api_base if llm_api_base is None else llm_api_base.strip() or None
+    )
     if state.run_id != project.name:
         raise typer.BadParameter(
             "Project path does not match the run ID in crawl_state.json",
@@ -652,7 +702,7 @@ def resume(
             param_hint="--set-credits",
         )
     configure_observability()
-    searchapi_key, openai_key = _credentials()
+    searchapi_key = _searchapi_key()
     budget = SearchApiCreditBudget.restore(state.budget.model_dump())
     previous_budget = budget.snapshot()
     if set_credits is None:
@@ -700,7 +750,7 @@ def resume(
         searchapi_retries=effective_searchapi_retries,
         searchapi_workers=effective_searchapi_workers,
         llm_workers=effective_llm_workers,
-        model=DEFAULT_LLM_MODEL,
+        model=effective_model,
         prompt_version=(f"{state.classifier_prompt_version}:{state.prompt_sha256}"),
         topic_expansion=state.expansion,
         classifier_system_prompt=state.classifier_system_prompt,
@@ -759,6 +809,8 @@ def resume(
             searchapi_retries=effective_searchapi_retries,
             searchapi_workers=effective_searchapi_workers,
             llm_workers=effective_llm_workers,
+            model=effective_model,
+            llm_api_base=effective_llm_api_base,
         )
         writer.append(resume_record)
         logger.info(
@@ -790,7 +842,7 @@ def resume(
             plan_summary=plan_summary,
             frontier=FrontierSettings.from_state(state),
             searchapi_concurrency=state.searchapi_workers,
-            openai_concurrency=state.llm_workers,
+            llm_concurrency=state.llm_workers,
             console=console,
         )
         dashboard.start()
@@ -799,12 +851,11 @@ def resume(
             "preparation", "Funding check passed; restoring the saved frontier"
         )
         failure_stage = "resume_provider_setup"
-        openai_client = _openai_client(openai_key)
-        logged_openai = LoggedOpenAIClient(
-            openai_client,
+        logged_llm = _llm_client(
             writer,
             on_event=dashboard.on_event,
             max_concurrency=state.llm_workers,
+            api_base=state.llm_api_base,
         )
         config = CrawlConfig(
             topic_query=state.topic_query,
@@ -817,6 +868,8 @@ def resume(
             searchapi_retries=state.searchapi_retries,
             searchapi_workers=state.searchapi_workers,
             llm_workers=state.llm_workers,
+            model=state.model,
+            llm_api_base=state.llm_api_base,
             **controls,
         )
         expansion = TopicExpansion.model_validate(state.expansion)
@@ -839,8 +892,8 @@ def resume(
                 expansion=expansion,
                 classifier_prompt=classifier_prompt,
                 searchapi=searchapi,
-                classifier=RelevanceClassifier(logged_openai),
-                llm_client=logged_openai,
+                classifier=RelevanceClassifier(logged_llm, model=state.model),
+                llm_client=logged_llm,
                 search_budget=budget,
                 writer=writer,
                 on_progress=dashboard.update,
@@ -901,7 +954,7 @@ def resume(
 def _prepare_research(
     *,
     writer: JsonlRunWriter,
-    client: LoggedOpenAIClient,
+    client: LoggedLlmClient,
     topic: str,
     language_hint: str,
     start_date_hint: str,
@@ -918,12 +971,13 @@ def _prepare_research(
     searchapi_retries: int = DEFAULT_SEARCHAPI_RETRIES,
     searchapi_workers: int = DEFAULT_SEARCHAPI_WORKERS,
     llm_workers: int = DEFAULT_LLM_WORKERS,
+    model: str = DEFAULT_LLM_MODEL,
     dashboard: RunDashboard | None = None,
 ):
     """Run the paid preparation stage with an append-only local audit trail."""
 
     try:
-        planner = InterviewPlanner(client)
+        planner = InterviewPlanner(client, model=model)
 
         def load_suggestions(selected_language: str) -> InterviewSuggestions:
             with console.status(
@@ -954,13 +1008,13 @@ def _prepare_research(
                 "preparation", "Compiling the research scope and query plan"
             )
             with client.call_context("discovery", "expand_topic_queries"):
-                expansion = TopicExpander(client).expand(brief)
+                expansion = TopicExpander(client, model=model).expand(brief)
         else:
             with console.status(
                 "[bold blue]Compiling the research scope and query plan…[/bold blue]"
             ):
                 with client.call_context("discovery", "expand_topic_queries"):
-                    expansion = TopicExpander(client).expand(brief)
+                    expansion = TopicExpander(client, model=model).expand(brief)
         classifier_prompt = compile_classifier_prompt(brief, expansion)
         writer.append(
             RunConfigRecord(
@@ -982,7 +1036,7 @@ def _prepare_research(
                 searchapi_retries=searchapi_retries,
                 searchapi_workers=searchapi_workers,
                 llm_workers=llm_workers,
-                model=DEFAULT_LLM_MODEL,
+                model=model,
                 prompt_version=(
                     f"{CLASSIFIER_PROMPT_VERSION}:{classifier_prompt.prompt_sha256}"
                 ),
@@ -1125,24 +1179,15 @@ def _expanded_transcript_reserve(budget: SearchApiCreditBudget, new_grant: int) 
     return min(max(_transcript_reserve(new_grant), minimum), maximum)
 
 
-def _credentials() -> tuple[str, str]:
+def _searchapi_key() -> str:
     settings = Settings()
     searchapi_key = settings.searchapi_api_key or os.getenv("SEARCHAPI_API_KEY")
-    openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-    if not searchapi_key or not openai_key:
-        missing = [
-            name
-            for name, value in (
-                ("SEARCHAPI_API_KEY", searchapi_key),
-                ("OPENAI_API_KEY", openai_key),
-            )
-            if not value
-        ]
+    if not searchapi_key:
         raise typer.BadParameter(
-            f"Missing environment variable(s): {', '.join(missing)}. "
-            "Copy .env.example to .env or export them before running."
+            "Missing environment variable: SEARCHAPI_API_KEY. "
+            "Copy .env.example to .env or export it before running."
         )
-    return searchapi_key, openai_key
+    return searchapi_key
 
 
 def _preflight_funding(
@@ -1197,7 +1242,7 @@ def _show_saved_project(project: Path, state: CrawlProjectState) -> None:
         state_store=ProjectStateStore(project),
         frontier=FrontierSettings.from_state(state),
         searchapi_concurrency=state.searchapi_workers,
-        openai_concurrency=state.llm_workers,
+        llm_concurrency=state.llm_workers,
         console=console,
     )
     dashboard.finish(state.last_status, "Saved project")
@@ -1324,7 +1369,7 @@ def _resume_plan_summary(
         )
     if effective_llm_workers != previous_state.llm_workers:
         parallelism.append(
-            f"OpenAI workers {previous_state.llm_workers} → {effective_llm_workers}"
+            f"LLM workers {previous_state.llm_workers} → {effective_llm_workers}"
         )
     detail = " · ".join((frontier, *parallelism))
     if remaining is not None and previous_remaining is not None:
@@ -1406,6 +1451,8 @@ def _commit_resume_state(
     searchapi_retries: int | None = None,
     searchapi_workers: int | None = None,
     llm_workers: int | None = None,
+    model: str | None = None,
+    llm_api_base: str | None = None,
 ) -> CrawlProjectState:
     """Atomically commit a funded resume grant before work can be dispatched."""
 
@@ -1432,6 +1479,10 @@ def _commit_resume_state(
                 else searchapi_workers
             ),
             "llm_workers": state.llm_workers if llm_workers is None else llm_workers,
+            "model": state.model if model is None else model,
+            "llm_api_base": (
+                state.llm_api_base if llm_api_base is None else llm_api_base
+            ),
             "budget": BudgetState.model_validate(budget.export_state()),
             "last_status": "prepared",
         },
@@ -1546,12 +1597,19 @@ def _format_controls(controls: dict[str, int]) -> str:
     )
 
 
-def _openai_client(api_key: str) -> OpenAI:
-    """Create a bounded OpenAI client with three transient retries."""
-
-    client = OpenAI(api_key=api_key, max_retries=3, timeout=90.0)
-    instrument_openai_client(client)
-    return client
+def _llm_client(
+    writer: JsonlRunWriter,
+    *,
+    on_event,
+    max_concurrency: int,
+    api_base: str | None,
+) -> LoggedLlmClient:
+    return LoggedLlmClient(
+        writer,
+        on_event=on_event,
+        max_concurrency=max_concurrency,
+        api_base=api_base,
+    )
 
 
 def _planned_query_strings(expansion) -> tuple[str, ...]:
