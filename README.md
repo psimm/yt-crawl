@@ -1,6 +1,6 @@
 # yt-crawl
 
-A YouTube research crawler using [SearchAPI](https://www.searchapi.io/docs/youtube) to get data and an LLM for choosing what to pursue. It finds videos for a topic, keeps those that match the research scope, and saves their target-language transcripts and an append-only audit trail.
+A YouTube research crawler using [SearchAPI](https://www.searchapi.io/?utm_source=&utm_medium=Ambassador&utm_campaign=simmering.dev) to get data and an LLM for choosing what to pursue. It finds videos for a topic, keeps those that match the research scope, and saves their target-language transcripts and an append-only audit trail.
 
 ![Crawl steps](diagram.png)
 
@@ -8,7 +8,7 @@ This is research code accompanying the related article: link. It is AI-generated
 
 ## SearchAPI
 
-YouTube data comes from [SearchAPI](https://www.searchapi.io/docs/youtube). [Create an account](https://www.searchapi.io/), then put `SEARCHAPI_API_KEY` in `.env`.
+Create an account, then put `SEARCHAPI_API_KEY` in `.env`.
 
 Pydantic response models are generated from the OpenAPI specs in `openapi/` with `scripts/generate_models.sh`. Rerun it only when those specs or the codegen flags change.
 
