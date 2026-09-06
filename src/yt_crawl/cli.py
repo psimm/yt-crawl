@@ -17,29 +17,29 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from yt_searchapi.budget import SearchApiCreditBudget
-from yt_searchapi.classifier import RelevanceClassifier
-from yt_searchapi.client import SearchApiClient
-from yt_searchapi.crawler import CrawlConfig, CrawlSummary, ResearchCrawler
-from yt_searchapi.interview import (
+from yt_crawl.budget import SearchApiCreditBudget
+from yt_crawl.classifier import RelevanceClassifier
+from yt_crawl.client import SearchApiClient
+from yt_crawl.crawler import CrawlConfig, CrawlSummary, ResearchCrawler
+from yt_crawl.interview import (
     INTERVIEW_QUESTIONS,
     InterviewPlanner,
     InterviewSuggestions,
 )
-from yt_searchapi.interview_ui import (
+from yt_crawl.interview_ui import (
     INTERVIEW_CANCELLED_MESSAGE,
     ConfirmedInterview,
     InterviewCancelled,
     TerminalInterview,
 )
-from yt_searchapi.llm_runtime import AuditedOpenAIClient, StructuredOutputError
-from yt_searchapi.observability import (
+from yt_crawl.llm_runtime import AuditedOpenAIClient, StructuredOutputError
+from yt_crawl.observability import (
     RunSessionSpan,
     configure_observability,
     instrument_openai_client,
     print_logfire_link,
 )
-from yt_searchapi.prompts import (
+from yt_crawl.prompts import (
     CLASSIFIER_PROMPT_VERSION,
     DEFAULT_LLM_MODEL,
     CompiledClassifierPrompt,
@@ -47,7 +47,7 @@ from yt_searchapi.prompts import (
     TopicExpansion,
     compile_classifier_prompt,
 )
-from yt_searchapi.records import (
+from yt_crawl.records import (
     InterviewAnswerItem,
     InterviewAnswerRecord,
     InterviewExampleKind,
@@ -56,20 +56,20 @@ from yt_searchapi.records import (
     RunStatus,
     RunStatusRecord,
 )
-from yt_searchapi.run_tui import RunDashboard
-from yt_searchapi.settings import (
+from yt_crawl.run_tui import FrontierSettings, RunDashboard
+from yt_crawl.settings import (
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
     Settings,
 )
-from yt_searchapi.start_settings_ui import (
+from yt_crawl.start_settings_ui import (
     BASE_START_SETTING_QUESTIONS,
     collect_missing_start_settings,
     float_setting,
     integer_setting,
 )
-from yt_searchapi.state import (
+from yt_crawl.state import (
     BudgetState,
     CheckpointPromptIntegrityError,
     CrawlProjectState,
@@ -78,7 +78,7 @@ from yt_searchapi.state import (
     validate_pending_transcript_decisions,
     validate_resumable_classifier_prompt,
 )
-from yt_searchapi.storage import JsonlRunWriter
+from yt_crawl.storage import JsonlRunWriter
 
 app = typer.Typer(
     name="yt-crawl",
@@ -148,7 +148,6 @@ def start(
         typer.Option(
             "--max-channel-pages",
             min=1,
-            max=10,
             help="Maximum pages fetched for each discovered channel.",
         ),
     ] = None,
@@ -299,6 +298,14 @@ def start(
         state_store=state_store,
         plan_summary=_start_plan_summary(
             grant=max_credits,
+            max_depth=max_depth,
+            max_queries=max_queries,
+            max_search_pages=max_search_pages,
+            max_channel_pages=max_channel_pages,
+        ),
+        frontier=FrontierSettings(
+            language=language_value,
+            start_date=start_date_value,
             max_depth=max_depth,
             max_queries=max_queries,
             max_search_pages=max_search_pages,
@@ -482,6 +489,17 @@ def resume(
             ),
         ),
     ] = 0,
+    set_credits: Annotated[
+        int | None,
+        typer.Option(
+            "--set-credits",
+            min=0,
+            help=(
+                "Overwrite remaining SearchAPI credits across discovery and "
+                "transcripts. Cannot be combined with --add-credits."
+            ),
+        ),
+    ] = None,
     start_date: Annotated[
         str | None,
         typer.Option(
@@ -514,7 +532,6 @@ def resume(
         typer.Option(
             "--max-channel-pages",
             min=1,
-            max=10,
             help="Increase pages allowed for each discovered channel.",
         ),
     ] = None,
@@ -548,6 +565,16 @@ def resume(
             ),
         ),
     ] = None,
+    show: Annotated[
+        bool,
+        typer.Option(
+            "--show",
+            help=(
+                "Print the saved dashboard and session summary without contacting "
+                "providers or changing the project."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Continue an existing project without repeating preparation or finished work."""
 
@@ -569,6 +596,9 @@ def resume(
         validate_pending_transcript_decisions(state)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--project") from exc
+    if show:
+        _show_saved_project(project, state)
+        return
     try:
         effective_start_date = (
             state.start_date if start_date is None else date.fromisoformat(start_date)
@@ -616,11 +646,21 @@ def resume(
             "Project path does not match the run ID in crawl_state.json",
             param_hint="--project",
         )
+    if set_credits is not None and add_credits:
+        raise typer.BadParameter(
+            "Use either --set-credits or --add-credits, not both.",
+            param_hint="--set-credits",
+        )
     configure_observability()
     searchapi_key, openai_key = _credentials()
     budget = SearchApiCreditBudget.restore(state.budget.model_dump())
     previous_budget = budget.snapshot()
-    new_grant = previous_budget.max_credits + add_credits
+    if set_credits is None:
+        new_grant = previous_budget.max_credits + add_credits
+        credits_added = add_credits
+    else:
+        new_grant = previous_budget.total_committed + set_credits
+        credits_added = max(0, new_grant - previous_budget.max_credits)
     spent = previous_budget.discovery_spent + previous_budget.transcript_spent
     unused_before = previous_budget.total_remaining
     invocation_allowance = new_grant - previous_budget.total_committed
@@ -635,6 +675,11 @@ def resume(
             new_grant,
             _expanded_transcript_reserve(budget, new_grant),
         )
+    elif set_credits is not None:
+        try:
+            budget.resize(new_grant, _resized_transcript_reserve(budget, new_grant))
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--set-credits") from exc
 
     writer = JsonlRunWriter(project.parent, state.run_id)
     resume_record = RunConfigRecord(
@@ -646,7 +691,7 @@ def resume(
         max_searchapi_credits=new_grant,
         transcript_reserve_credits=budget.snapshot().transcript_capacity,
         session_action="resume",
-        credits_added=add_credits,
+        credits_added=credits_added,
         account_remaining_credits=account_credits,
         **controls,
         gl=state.gl,
@@ -677,7 +722,7 @@ def resume(
             f"{effective_searchapi_retries}"
         )
     plan_summary = _resume_plan_summary(
-        credits_added=add_credits,
+        credits_added=credits_added,
         new_grant=new_grant,
         previous_state=state,
         controls=controls,
@@ -685,13 +730,16 @@ def resume(
         searchapi_retries=effective_searchapi_retries,
         searchapi_workers=effective_searchapi_workers,
         llm_workers=effective_llm_workers,
+        remaining=set_credits,
+        previous_remaining=unused_before,
+        previous_grant=previous_budget.max_credits,
     )
     session_span = RunSessionSpan(
         run_id=state.run_id,
         project=project,
         action="resume",
         planned_credits=invocation_allowance,
-        credits_added=add_credits,
+        credits_added=credits_added,
         controls=controls,
     )
     dashboard: RunDashboard | None = None
@@ -714,13 +762,14 @@ def resume(
         )
         writer.append(resume_record)
         logger.info(
-            "Resume funded project={} previous_grant={} added={} new_grant={} "
-            "already_spent={} unused_before={} account_credits={} controls={} "
-            "searchapi_retries={} searchapi_workers={} llm_workers={} "
+            "Resume funded project={} previous_grant={} added={} remaining={} "
+            "new_grant={} already_spent={} unused_before={} account_credits={} "
+            "controls={} searchapi_retries={} searchapi_workers={} llm_workers={} "
             "reopened_videos={} changed={}",
             project,
             previous_budget.max_credits,
-            add_credits,
+            credits_added,
+            set_credits if set_credits is not None else unused_before + credits_added,
             new_grant,
             spent,
             unused_before,
@@ -739,6 +788,7 @@ def resume(
             budget=budget,
             state_store=state_store,
             plan_summary=plan_summary,
+            frontier=FrontierSettings.from_state(state),
             searchapi_concurrency=state.searchapi_workers,
             openai_concurrency=state.llm_workers,
             console=console,
@@ -1048,6 +1098,15 @@ def _transcript_reserve(max_credits: int) -> int:
     return min(max(1, math.ceil(max_credits / 3)), max_credits - 3)
 
 
+def _resized_transcript_reserve(budget: SearchApiCreditBudget, new_grant: int) -> int:
+    snapshot = budget.snapshot()
+    minimum = snapshot.transcript_spent + snapshot.transcript_reserved
+    maximum = new_grant - snapshot.discovery_spent
+    remaining = new_grant - snapshot.total_committed
+    extra = 0 if remaining < 4 else _transcript_reserve(remaining)
+    return min(max(minimum + extra, minimum), maximum)
+
+
 def _expanded_transcript_reserve(budget: SearchApiCreditBudget, new_grant: int) -> int:
     snapshot = budget.snapshot()
     # Capacity transferred from discovery is one-way.  A later grant may add
@@ -1127,6 +1186,68 @@ def _check_searchapi_funding(
         )
 
 
+def _show_saved_project(project: Path, state: CrawlProjectState) -> None:
+    """Render the persisted dashboard and summary without mutating the project."""
+
+    budget = SearchApiCreditBudget.restore(state.budget.model_dump())
+    dashboard = RunDashboard(
+        mode="SHOW PROJECT",
+        project_dir=project,
+        budget=budget,
+        state_store=ProjectStateStore(project),
+        frontier=FrontierSettings.from_state(state),
+        searchapi_concurrency=state.searchapi_workers,
+        openai_concurrency=state.llm_workers,
+        console=console,
+    )
+    dashboard.finish(state.last_status, "Saved project")
+    console.print(dashboard.render())
+    _print_summary(
+        _summary_from_state(state),
+        project,
+        budget,
+        controls={
+            "max_depth": state.max_depth,
+            "max_queries": state.max_queries,
+            "max_search_pages": state.max_search_pages,
+            "max_channel_pages": state.max_channel_pages,
+        },
+        include_follow_up=False,
+    )
+
+
+def _summary_from_state(state: CrawlProjectState) -> CrawlSummary:
+    terminal = set(state.terminal_video_ids)
+    pending = sum(
+        video_id not in terminal and int(video.get("depth", 0)) <= state.max_depth
+        for video_id, video in state.discovered_videos.items()
+    )
+    try:
+        status = RunStatus(state.last_status)
+    except ValueError:
+        status = (
+            RunStatus.COMPLETED
+            if state.stop_reason == "frontier_exhausted"
+            else RunStatus.STARTED
+        )
+    return CrawlSummary(
+        status=status,
+        stop_reason=state.stop_reason,
+        videos_discovered=len(state.discovered_videos),
+        videos_evaluated=len(state.evaluated_video_ids),
+        relevant_videos=len(state.relevant_ids),
+        transcripts_collected=len(state.transcript_ids),
+        channels_expanded=sum(
+            progress.pages_completed > 0
+            for progress in state.channel_progress.values()
+        ),
+        queries_executed=sum(
+            progress.pages_completed > 0 for progress in state.query_progress.values()
+        ),
+        pending_videos=pending,
+    )
+
+
 def _start_plan_summary(
     *,
     grant: int,
@@ -1152,6 +1273,9 @@ def _resume_plan_summary(
     searchapi_retries: int | None = None,
     searchapi_workers: int | None = None,
     llm_workers: int | None = None,
+    remaining: int | None = None,
+    previous_remaining: int | None = None,
+    previous_grant: int | None = None,
 ) -> str:
     labels = {
         "max_queries": "queries",
@@ -1203,7 +1327,15 @@ def _resume_plan_summary(
             f"OpenAI workers {previous_state.llm_workers} → {effective_llm_workers}"
         )
     detail = " · ".join((frontier, *parallelism))
-    return f"Resume plan · grant +{credits_added} → {new_grant} · {detail}"
+    if remaining is not None and previous_remaining is not None:
+        grant_text = (
+            f"remaining {previous_remaining} → {remaining} · "
+            f"grant {previous_grant if previous_grant is not None else new_grant} "
+            f"→ {new_grant}"
+        )
+    else:
+        grant_text = f"grant +{credits_added} → {new_grant}"
+    return f"Resume plan · {grant_text} · {detail}"
 
 
 def _require_new_project(project: Path) -> None:
@@ -1434,9 +1566,12 @@ def _print_summary(
     search_budget: SearchApiCreditBudget,
     *,
     controls: dict[str, int],
+    include_follow_up: bool = True,
 ) -> None:
     search = search_budget.snapshot()
-    table = Table(title=f"Project session {summary.status.value}")
+    table = Table(
+        title=f"Project session {summary.status.value}" if include_follow_up else None
+    )
     table.add_column("Metric")
     table.add_column("Value", justify="right")
     for label, value in (
@@ -1463,10 +1598,11 @@ def _print_summary(
         f"[bold]Raw SearchAPI responses:[/bold] {(run_dir / 'raw').resolve()}"
     )
     print_logfire_link(console)
-    console.print(
-        f"[bold]Stop reason:[/bold] {summary.stop_reason}\n"
-        f"[bold]Project data:[/bold] {shlex.quote(str(run_dir.resolve()))}"
-    )
+    if include_follow_up:
+        console.print(f"[bold]Stop reason:[/bold] {summary.stop_reason}")
+    console.print(f"[bold]Project data:[/bold] {shlex.quote(str(run_dir.resolve()))}")
+    if not include_follow_up:
+        return
     next_command = _suggested_next_command(summary, run_dir, search, controls=controls)
     if next_command:
         if summary.status is RunStatus.COMPLETED:
@@ -1511,7 +1647,7 @@ def _suggested_next_command(
         for name, limit in (
             ("max_queries", planned_query_limit),
             ("max_search_pages", 10),
-            ("max_channel_pages", 10),
+            ("max_channel_pages", 100),
             ("max_depth", 5),
         ):
             current = controls[name]
@@ -1520,6 +1656,9 @@ def _suggested_next_command(
                 parts.extend((f"--{name.replace('_', '-')}", str(current + 1)))
                 return " ".join(parts)
         return None
+    if budget.discovery_remaining == 0 and budget.total_remaining > 0:
+        parts.extend(("--set-credits", str(budget.total_remaining)))
+        return " ".join(parts)
     add_credits = 0
     if budget.total_remaining == 0:
         add_credits = max(4, min(25, max(1, budget.max_credits // 2)))

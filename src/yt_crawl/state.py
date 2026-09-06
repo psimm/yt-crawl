@@ -11,9 +11,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from yt_searchapi.classifier import compact_relevance_decision
-from yt_searchapi.prompts import CLASSIFIER_PROMPT_VERSION
-from yt_searchapi.settings import (
+from yt_crawl.classifier import compact_relevance_decision
+from yt_crawl.prompts import CLASSIFIER_PROMPT_VERSION
+from yt_crawl.settings import (
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
@@ -42,8 +42,8 @@ class StateModel(BaseModel):
 
 
 class BudgetState(StateModel):
-    max_credits: int = Field(gt=1)
-    transcript_capacity: int = Field(gt=0)
+    max_credits: int = Field(ge=0)
+    transcript_capacity: int = Field(ge=0)
     discovery_spent: int = Field(ge=0)
     transcript_spent: int = Field(ge=0)
     pending: list[dict[str, Any]] = []

@@ -17,17 +17,38 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from yt_searchapi.budget import SearchApiCreditBudget
-from yt_searchapi.llm_runtime import (
+from yt_crawl.budget import SearchApiCreditBudget
+from yt_crawl.llm_runtime import (
     GPT56_LUNA_MODEL,
     LlmTokenMetrics,
     estimate_gpt56_luna_standard_cost,
 )
-from yt_searchapi.observability import logfire_link
-from yt_searchapi.runtime_events import CrawlProgressSnapshot, RuntimeEvent
-from yt_searchapi.state import CrawlProjectState, ProjectStateStore
+from yt_crawl.observability import logfire_link
+from yt_crawl.runtime_events import CrawlProgressSnapshot, RuntimeEvent
+from yt_crawl.state import CrawlProjectState, ProjectStateStore
 
-RunMode = Literal["START NEW PROJECT", "RESUME EXISTING PROJECT"]
+RunMode = Literal["START NEW PROJECT", "RESUME EXISTING PROJECT", "SHOW PROJECT"]
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierSettings:
+    language: str | None = None
+    start_date: str | None = None
+    max_depth: int | None = None
+    max_queries: int | None = None
+    max_search_pages: int | None = None
+    max_channel_pages: int | None = None
+
+    @classmethod
+    def from_state(cls, state: CrawlProjectState) -> FrontierSettings:
+        return cls(
+            language=state.language,
+            start_date=state.start_date.isoformat(),
+            max_depth=state.max_depth,
+            max_queries=state.max_queries,
+            max_search_pages=state.max_search_pages,
+            max_channel_pages=state.max_channel_pages,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +165,7 @@ class RunDashboard:
         budget: SearchApiCreditBudget,
         state_store: ProjectStateStore,
         plan_summary: str | None = None,
+        frontier: FrontierSettings | None = None,
         searchapi_concurrency: int = 1,
         openai_concurrency: int = 1,
         console: Console | None = None,
@@ -157,6 +179,7 @@ class RunDashboard:
         self.budget = budget
         self.state_store = state_store
         self._plan_summary = plan_summary.strip() if plan_summary else None
+        self._frontier = frontier
         self.searchapi_concurrency = searchapi_concurrency
         self.openai_concurrency = openai_concurrency
         self.console = console or Console()
@@ -299,6 +322,7 @@ class RunDashboard:
             status = self._status
             activity_text = self._activity
             plan_summary = self._plan_summary
+            frontier = self._frontier
 
         budget = self.budget.snapshot()
         active_searchapi = min(outstanding_searchapi, self.searchapi_concurrency)
@@ -309,12 +333,20 @@ class RunDashboard:
         heading = Table.grid(expand=True)
         heading.add_column(ratio=3)
         heading.add_column(justify="right", ratio=1)
-        heading.add_row(Text(str(self.project_dir), overflow="ellipsis"), status)
-        heading.add_row("Session", elapsed)
+        show = self.mode == "SHOW PROJECT"
+        heading.add_row(
+            Text(str(self.project_dir), overflow="ellipsis"),
+            "" if show else status,
+        )
+        heading.add_row("Session", "SNAPSHOT" if show else elapsed)
         header = Panel(
             heading,
             title=Text(self.mode, style="bold white"),
-            border_style="cyan" if self.mode.startswith("RESUME") else "green",
+            border_style=(
+                "cyan"
+                if self.mode.startswith(("RESUME", "SHOW"))
+                else "green"
+            ),
             box=box.ROUNDED,
         )
 
@@ -343,7 +375,9 @@ class RunDashboard:
                 "Progress  "
                 f"queries {crawl.queries_done:,}/{crawl.queries_planned:,} "
                 f"({crawl.queries_started:,} started)  |  "
-                f"channels {crawl.channels_done:,}/{crawl.channels_discovered:,}"
+                f"channels {crawl.channels_exhausted:,} exhausted · "
+                f"{crawl.channels_page_capped:,} page cap · "
+                f"{crawl.channels_discovered:,} discovered"
             )
         else:
             metrics.add_column(ratio=1)
@@ -357,8 +391,9 @@ class RunDashboard:
                 f"{crawl.pending:,} pending",
                 f"[bold]{crawl.queries_done:,}/"
                 f"{crawl.queries_planned:,}[/] queries\n"
-                f"{crawl.channels_done:,}/"
-                f"{crawl.channels_discovered:,} channels",
+                f"{crawl.channels_discovered:,} channels discovered\n"
+                f"{crawl.channels_exhausted:,} exhausted · "
+                f"{crawl.channels_page_capped:,} page cap",
             )
         metrics_panel = Panel(
             metrics, title="Crawl", border_style="blue", box=box.ROUNDED
@@ -432,6 +467,15 @@ class RunDashboard:
             plan.add_column(no_wrap=False, overflow="fold")
             plan.add_row(Text("Plan", style="bold cyan"), Text(plan_summary))
             renderables.append(plan)
+        frontier_text = _frontier_text(frontier)
+        if frontier_text:
+            frontier_grid = Table.grid(expand=True, padding=(0, 1))
+            frontier_grid.add_column(width=8, no_wrap=True)
+            frontier_grid.add_column(no_wrap=False, overflow="fold")
+            frontier_grid.add_row(
+                Text("Frontier", style="bold cyan"), Text(frontier_text)
+            )
+            renderables.append(frontier_grid)
         renderables.extend(
             [activity, metrics_panel, credits_panel, usage_panel, footer]
         )
@@ -441,7 +485,10 @@ class RunDashboard:
         """Load durable totals once before live event-driven updates begin."""
 
         try:
-            self._crawl = _crawl_totals(self.state_store.load())
+            state = self.state_store.load()
+            self._crawl = _crawl_totals(state)
+            if self._frontier is None:
+                self._frontier = FrontierSettings.from_state(state)
         except (FileNotFoundError, OSError, ValueError):
             pass
         try:
@@ -467,6 +514,13 @@ def _crawl_totals(state: CrawlProjectState | None) -> CrawlProgressSnapshot:
         item.exhausted or item.pages_completed >= state.max_search_pages
         for item in state.query_progress.values()
     )
+    channels_exhausted = sum(
+        item.exhausted for item in state.channel_progress.values()
+    )
+    channels_page_capped = sum(
+        not item.exhausted and item.pages_completed >= state.max_channel_pages
+        for item in state.channel_progress.values()
+    )
     return CrawlProgressSnapshot(
         discovered=len(state.discovered_videos),
         evaluated=len(state.evaluated_video_ids),
@@ -476,12 +530,34 @@ def _crawl_totals(state: CrawlProjectState | None) -> CrawlProgressSnapshot:
         queries_done=min(queries_done, queries_planned),
         queries_started=min(queries_started, queries_planned),
         queries_planned=queries_planned,
-        channels_done=sum(
-            item.exhausted or item.pages_completed >= state.max_channel_pages
-            for item in state.channel_progress.values()
-        ),
+        channels_done=channels_exhausted + channels_page_capped,
         channels_discovered=len(state.discovered_channels),
+        channels_exhausted=channels_exhausted,
+        channels_page_capped=channels_page_capped,
     )
+
+
+def _frontier_text(frontier: FrontierSettings | None) -> str | None:
+    if frontier is None:
+        return None
+    scope = [
+        f"language {frontier.language}" if frontier.language else None,
+        f"start {frontier.start_date}" if frontier.start_date else None,
+        f"depth {frontier.max_depth}" if frontier.max_depth is not None else None,
+        f"queries {frontier.max_queries}" if frontier.max_queries is not None else None,
+        (
+            f"search pages {frontier.max_search_pages}"
+            if frontier.max_search_pages is not None
+            else None
+        ),
+        (
+            f"channel pages {frontier.max_channel_pages}"
+            if frontier.max_channel_pages is not None
+            else None
+        ),
+    ]
+    parts = [item for item in scope if item]
+    return " · ".join(parts) if parts else None
 
 
 def _credit_bar(committed: int, grant: int, *, width: int) -> Text:

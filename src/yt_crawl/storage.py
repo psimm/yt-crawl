@@ -7,7 +7,7 @@ import threading
 from collections.abc import Iterable
 from pathlib import Path
 
-from yt_searchapi.records import RunRecordBase
+from yt_crawl.records import RunRecordBase
 
 
 class RunIdMismatchError(ValueError):

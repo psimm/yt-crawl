@@ -9,27 +9,27 @@ from types import SimpleNamespace
 import httpx
 from rich.console import Console
 
-from yt_searchapi.budget import SearchApiCreditBudget
-from yt_searchapi.classifier import RelevanceClassifier, RelevanceDecision
-from yt_searchapi.client import SearchApiClient, SearchApiError
-from yt_searchapi.crawler import CrawlConfig, ResearchCrawler, _DiscoveredChannel
-from yt_searchapi.models import (
+from yt_crawl.budget import SearchApiCreditBudget
+from yt_crawl.classifier import RelevanceClassifier, RelevanceDecision
+from yt_crawl.client import SearchApiClient, SearchApiError
+from yt_crawl.crawler import CrawlConfig, ResearchCrawler, _DiscoveredChannel
+from yt_crawl.models import (
     youtube,
     youtube_channel_videos,
     youtube_transcripts,
     youtube_video,
 )
-from yt_searchapi.prompts import (
+from yt_crawl.prompts import (
     CompiledClassifierPrompt,
     LlmCallResult,
     LlmUsage,
     TopicExpansion,
 )
-from yt_searchapi.records import DiscoverySource, RunStatus
-from yt_searchapi.run_tui import RunDashboard
-from yt_searchapi.settings import DEFAULT_LLM_WORKERS, DEFAULT_SEARCHAPI_WORKERS
-from yt_searchapi.state import ProjectStateStore
-from yt_searchapi.storage import JsonlRunWriter
+from yt_crawl.records import DiscoverySource, RunStatus
+from yt_crawl.run_tui import RunDashboard
+from yt_crawl.settings import DEFAULT_LLM_WORKERS, DEFAULT_SEARCHAPI_WORKERS
+from yt_crawl.state import ProjectStateStore
+from yt_crawl.storage import JsonlRunWriter
 
 CLASSIFY_PROMPT_SHA256 = (
     "4d553b0b48b4bb151321bd8aa5d9904477ecfdbec8dea4f2554cef83409c8ae6"
@@ -707,7 +707,7 @@ def test_transcript_dispatch_error_is_charged_but_remains_retryable(
 def test_transient_transcript_failure_retries_and_charges_each_attempt(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setattr("yt_searchapi.crawler.time.sleep", lambda _delay: None)
+    monkeypatch.setattr("yt_crawl.crawler.time.sleep", lambda _delay: None)
     api = FailOnceTranscriptSearchApi()
     budget = SearchApiCreditBudget(5, 2)
     config = CrawlConfig(
@@ -736,7 +736,7 @@ def test_transient_transcript_failure_retries_and_charges_each_attempt(
 def test_transcript_retry_exhaustion_fails_after_budgeted_attempts(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setattr("yt_searchapi.crawler.time.sleep", lambda _delay: None)
+    monkeypatch.setattr("yt_crawl.crawler.time.sleep", lambda _delay: None)
     api = FailingTranscriptSearchApi()
     budget = SearchApiCreditBudget(5, 2)
     config = CrawlConfig(
@@ -794,7 +794,7 @@ def test_retry_stops_before_unfunded_transcript_attempt(tmp_path) -> None:
 
 
 def test_discovery_batch_retries_only_failed_members(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("yt_searchapi.crawler.time.sleep", lambda _delay: None)
+    monkeypatch.setattr("yt_crawl.crawler.time.sleep", lambda _delay: None)
     budget = SearchApiCreditBudget(5, 2)
     config = CrawlConfig(
         topic_query="research topic",
@@ -873,7 +873,7 @@ def test_discovery_batch_checkpoints_all_charges_once_before_dispatch(tmp_path) 
 
 
 def test_single_discovery_retry_is_separately_charged(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("yt_searchapi.crawler.time.sleep", lambda _delay: None)
+    monkeypatch.setattr("yt_crawl.crawler.time.sleep", lambda _delay: None)
     budget = SearchApiCreditBudget(4, 1)
     config = CrawlConfig(
         topic_query="research topic",

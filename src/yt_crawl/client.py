@@ -16,7 +16,7 @@ from diskcache import Cache
 from loguru import logger
 from pydantic import BaseModel
 
-from yt_searchapi.models import (
+from yt_crawl.models import (
     youtube,
     youtube_channel,
     youtube_channel_videos,
@@ -24,8 +24,8 @@ from yt_searchapi.models import (
     youtube_transcripts,
     youtube_video,
 )
-from yt_searchapi.models.account import AccountResponse
-from yt_searchapi.settings import DEFAULT_SEARCHAPI_WORKERS
+from yt_crawl.models.account import AccountResponse
+from yt_crawl.settings import DEFAULT_SEARCHAPI_WORKERS
 
 T = TypeVar("T", bound=BaseModel)
 SearchParams = (

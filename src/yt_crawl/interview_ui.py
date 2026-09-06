@@ -18,8 +18,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from yt_searchapi.interview import InterviewSuggestions, SuggestedExample
-from yt_searchapi.prompts import StrictModel, TopicBrief
+from yt_crawl.interview import InterviewSuggestions, SuggestedExample
+from yt_crawl.prompts import StrictModel, TopicBrief
 
 InterviewSection = Literal[
     "research_goal",

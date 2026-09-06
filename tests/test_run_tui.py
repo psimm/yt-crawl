@@ -5,18 +5,18 @@ from threading import Event, Thread
 import pytest
 from rich.console import Console
 
-import yt_searchapi.run_tui as run_tui
-from yt_searchapi.budget import SearchApiCreditBudget
-from yt_searchapi.records import ApiCallRecord
-from yt_searchapi.run_tui import RunDashboard, load_api_totals
-from yt_searchapi.runtime_events import CrawlProgressSnapshot, RuntimeEvent
-from yt_searchapi.state import (
+import yt_crawl.run_tui as run_tui
+from yt_crawl.budget import SearchApiCreditBudget
+from yt_crawl.records import ApiCallRecord
+from yt_crawl.run_tui import RunDashboard, load_api_totals
+from yt_crawl.runtime_events import CrawlProgressSnapshot, RuntimeEvent
+from yt_crawl.state import (
     BudgetState,
     CrawlProjectState,
     PageProgress,
     ProjectStateStore,
 )
-from yt_searchapi.storage import JsonlRunWriter
+from yt_crawl.storage import JsonlRunWriter
 
 
 def _saved_project(tmp_path):
@@ -154,7 +154,18 @@ def test_resume_dashboard_recovers_metrics_and_renders_at_common_widths(
     assert ("transcripts 1" if width == 80 else "1 transcripts") in text
     assert ("pending 1" if width == 80 else "1 pending") in text
     assert "1/3" in text
-    assert "1/1" in text
+    assert "1 exhausted" in text
+    assert "0 page cap" in text
+    assert "discovered" in text
+    if width != 80:
+        assert "1 channels discovered" in text
+    assert "Frontier" in text
+    assert "language de" in text
+    assert "start 2025-01-01" in text
+    assert "depth 1" in text
+    assert "queries 3" in text
+    assert "search pages 2" in text
+    assert "channel pages 1" in text
     assert "input 1,200" in text
     assert "cached 400" in text
     assert "writes 200" in text
@@ -267,7 +278,10 @@ def test_channel_done_requires_exhaustion_or_page_limit(tmp_path) -> None:
 
     text = _render(dashboard, 120)
 
-    assert "2/3 channels" in text
+    assert "1 exhausted" in text
+    assert "1 page cap" in text
+    assert "3 channels discovered" in text
+    assert "2/3 channels" not in text
 
 
 def test_start_and_resume_headers_are_explicit(tmp_path) -> None:
@@ -382,6 +396,8 @@ def test_crawl_snapshot_updates_rendered_totals_without_loading_state(tmp_path) 
             queries_planned=5,
             channels_done=6,
             channels_discovered=9,
+            channels_exhausted=4,
+            channels_page_capped=2,
         )
     )
 
@@ -392,7 +408,10 @@ def test_crawl_snapshot_updates_rendered_totals_without_loading_state(tmp_path) 
     assert "4 relevant" in text
     assert "5 transcripts · 2 pending" in text
     assert "3/5 queries" in text
-    assert "6/9 channels" in text
+    assert "4 exhausted · 2 page cap" in text
+    assert "9 channels discovered" in text
+    assert text.index("9 channels discovered") < text.index("4 exhausted · 2 page cap")
+    assert "6/9 channels" not in text
 
 
 def test_finished_event_keeps_remaining_parallel_work_visible(tmp_path) -> None:

@@ -1,6 +1,6 @@
-"""YouTube SearchAPI client helpers for yt-searchapi."""
+"""YouTube SearchAPI client helpers for yt-crawl."""
 
-from yt_searchapi.client import (
+from yt_crawl.client import (
     ChannelRequest,
     ChannelVideosRequest,
     CommentsRequest,
@@ -10,7 +10,7 @@ from yt_searchapi.client import (
     TranscriptsRequest,
     VideoRequest,
 )
-from yt_searchapi.models.account import AccountResponse
+from yt_crawl.models.account import AccountResponse
 
 __all__ = [
     "AccountResponse",

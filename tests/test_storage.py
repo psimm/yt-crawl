@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 import pytest
 from pydantic import ValidationError
 
-from yt_searchapi.records import (
+from yt_crawl.records import (
     BudgetAction,
     BudgetEventRecord,
     BudgetKind,
@@ -21,12 +21,12 @@ from yt_searchapi.records import (
     TranscriptSegment,
     validate_run_record,
 )
-from yt_searchapi.settings import (
+from yt_crawl.settings import (
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
 )
-from yt_searchapi.storage import JsonlRunWriter, RunIdMismatchError
+from yt_crawl.storage import JsonlRunWriter, RunIdMismatchError
 
 
 def config_record(run_id: str = "run-001") -> RunConfigRecord:
@@ -54,6 +54,20 @@ def test_resume_config_can_record_a_fully_transferred_grant() -> None:
     record = RunConfigRecord(**payload)
 
     assert record.transcript_reserve_credits == record.max_searchapi_credits
+
+
+def test_resume_config_can_record_a_zero_remaining_grant() -> None:
+    payload = config_record().model_dump()
+    payload.update(
+        max_searchapi_credits=0,
+        transcript_reserve_credits=0,
+        session_action="resume",
+    )
+
+    record = RunConfigRecord(**payload)
+
+    assert record.max_searchapi_credits == 0
+    assert record.transcript_reserve_credits == 0
 
 
 def test_run_config_uses_configured_parallelism_defaults() -> None:

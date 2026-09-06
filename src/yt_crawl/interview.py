@@ -8,7 +8,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import Field, model_validator
 
-from yt_searchapi.prompts import (
+from yt_crawl.prompts import (
     DEFAULT_LLM_MODEL,
     InterviewAnswer,
     LlmCallResult,

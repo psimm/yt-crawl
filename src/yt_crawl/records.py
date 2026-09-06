@@ -17,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from yt_searchapi.settings import (
+from yt_crawl.settings import (
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
@@ -125,8 +125,8 @@ class RunConfigRecord(RunRecordBase):
     expanded_queries: tuple[str, ...] = ()
     language: str = Field(min_length=1)
     start_date: date
-    max_searchapi_credits: int = Field(gt=1)
-    transcript_reserve_credits: int = Field(gt=0)
+    max_searchapi_credits: int = Field(ge=0)
+    transcript_reserve_credits: int = Field(ge=0)
     session_action: Literal["start", "resume"] = "start"
     credits_added: int = Field(default=0, ge=0)
     account_remaining_credits: int | None = Field(default=None, ge=0)

@@ -7,7 +7,7 @@ import pytest
 
 # Tests exercise observability through fakes. Never export from a developer's
 # local Logfire credentials while importing the application under test.
-os.environ["YT_SEARCHAPI_DISABLE_TELEMETRY"] = "1"
+os.environ["YT_CRAWL_DISABLE_TELEMETRY"] = "1"
 
 
 @pytest.fixture(autouse=True)

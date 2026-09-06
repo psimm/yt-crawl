@@ -4,20 +4,20 @@ from datetime import date
 
 import pytest
 
-from yt_searchapi.budget import SearchApiCreditBudget
-from yt_searchapi.classifier import RelevanceDecision
-from yt_searchapi.crawler import CrawlConfig, ResearchCrawler
-from yt_searchapi.models import youtube, youtube_transcripts, youtube_video
-from yt_searchapi.prompts import (
+from yt_crawl.budget import SearchApiCreditBudget
+from yt_crawl.classifier import RelevanceDecision
+from yt_crawl.crawler import CrawlConfig, ResearchCrawler
+from yt_crawl.models import youtube, youtube_transcripts, youtube_video
+from yt_crawl.prompts import (
     CLASSIFIER_PROMPT_VERSION,
     CompiledClassifierPrompt,
     LlmCallResult,
     LlmUsage,
     TopicExpansion,
 )
-from yt_searchapi.records import RunStatus
-from yt_searchapi.state import ProjectStateStore, validate_pending_transcript_decisions
-from yt_searchapi.storage import JsonlRunWriter
+from yt_crawl.records import RunStatus
+from yt_crawl.state import ProjectStateStore, validate_pending_transcript_decisions
+from yt_crawl.storage import JsonlRunWriter
 
 CLASSIFY_PROMPT_SHA256 = (
     "4d553b0b48b4bb151321bd8aa5d9904477ecfdbec8dea4f2554cef83409c8ae6"

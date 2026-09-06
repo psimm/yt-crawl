@@ -10,14 +10,14 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from yt_searchapi.classifier import (
+from yt_crawl.classifier import (
     ClassificationJob,
     RelevanceClassifier,
     RelevanceDecision,
     VideoCandidate,
     compact_relevance_decision,
 )
-from yt_searchapi.interview import (
+from yt_crawl.interview import (
     INTERVIEW_QUESTIONS,
     InterviewPlanner,
     InterviewSuggestions,
@@ -25,7 +25,7 @@ from yt_searchapi.interview import (
     build_topic_brief,
     conduct_interview,
 )
-from yt_searchapi.prompts import (
+from yt_crawl.prompts import (
     DEFAULT_LLM_MODEL,
     TopicBrief,
     TopicExpander,

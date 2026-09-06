@@ -1,6 +1,6 @@
 from datetime import date, datetime, timezone
 
-from yt_searchapi.dates import (
+from yt_crawl.dates import (
     is_on_or_after_start_date,
     language_code_matches,
     parse_publication_date,

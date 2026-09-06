@@ -1,6 +1,6 @@
 """Generated Pydantic models from OpenAPI specs (one module per engine)."""
 
-from yt_searchapi.models import (
+from yt_crawl.models import (
     account,
     youtube,
     youtube_channel,

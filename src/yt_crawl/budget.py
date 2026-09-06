@@ -97,22 +97,19 @@ class SearchApiCreditBudget:
 
         max_credits = int(state["max_credits"])
         transcript_capacity = int(state["transcript_capacity"])
-        _require_positive_int("max_credits", max_credits)
-        _require_positive_int("transcript_capacity", transcript_capacity)
+        _require_nonnegative_int("max_credits", max_credits)
+        _require_nonnegative_int("transcript_capacity", transcript_capacity)
         if transcript_capacity > max_credits:
             raise ValueError(
                 "persisted transcript capacity cannot exceed the SearchAPI grant"
             )
 
-        # A fully transferred grant has no discovery capacity left.  It is a
-        # valid persisted state, even though a fresh configuration requires at
-        # least one discovery credit.
-        if transcript_capacity == max_credits:
-            budget = cls(max_credits, max_credits - 1)
-            budget._transcript_capacity = transcript_capacity
-            budget._discovery_capacity = 0
-        else:
-            budget = cls(max_credits, transcript_capacity)
+        # Persisted grants may exhaust either pool, including a zero remaining
+        # overwrite. Fresh configuration still requires a discovery credit.
+        budget = cls(2, 1)
+        budget._max_credits = max_credits
+        budget._transcript_capacity = transcript_capacity
+        budget._discovery_capacity = max_credits - transcript_capacity
         budget._discovery_spent = int(state.get("discovery_spent", 0))
         budget._transcript_spent = int(state.get("transcript_spent", 0))
         pending = state.get("pending", [])
@@ -178,6 +175,35 @@ class SearchApiCreditBudget:
                 raise ValueError(
                     "transcript capacity cannot be lower than its current "
                     "one-way transferred capacity"
+                )
+            minimum_transcript = (
+                self._transcript_spent + self._pending_credits_unlocked()
+            )
+            minimum_discovery = self._discovery_spent
+            if transcript_reserve_credits < minimum_transcript:
+                raise ValueError(
+                    "transcript reserve cannot be lower than credits already spent "
+                    "or reserved"
+                )
+            if max_credits - transcript_reserve_credits < minimum_discovery:
+                raise ValueError(
+                    "discovery capacity cannot be lower than credits already spent"
+                )
+            self._max_credits = max_credits
+            self._transcript_capacity = transcript_reserve_credits
+            self._discovery_capacity = max_credits - transcript_reserve_credits
+
+    def resize(self, max_credits: int, transcript_reserve_credits: int) -> None:
+        """Set grant and pool capacities without reopening spent or reserved credits."""
+
+        _require_nonnegative_int("max_credits", max_credits)
+        _require_nonnegative_int(
+            "transcript_reserve_credits", transcript_reserve_credits
+        )
+        with self._lock:
+            if transcript_reserve_credits > max_credits:
+                raise ValueError(
+                    "transcript_reserve_credits cannot exceed max_credits"
                 )
             minimum_transcript = (
                 self._transcript_spent + self._pending_credits_unlocked()

@@ -1,4 +1,5 @@
 import json
+import re
 from contextlib import contextmanager
 from datetime import date
 from io import StringIO
@@ -10,31 +11,33 @@ from rich.console import Console
 from typer.main import get_command
 from typer.testing import CliRunner
 
-import yt_searchapi.cli as cli
-from yt_searchapi.budget import SearchApiCreditBudget
-from yt_searchapi.cli import (
+import yt_crawl.cli as cli
+from yt_crawl.budget import SearchApiCreditBudget
+from yt_crawl.cli import (
     _commit_resume_state,
     _expanded_transcript_reserve,
     _openai_client,
     _preflight_funding,
+    _resized_transcript_reserve,
     _suggested_next_command,
     _transcript_reserve,
     _visible_start_error,
     app,
 )
-from yt_searchapi.crawler import CrawlSummary
-from yt_searchapi.llm_runtime import StructuredOutputError
-from yt_searchapi.prompts import CLASSIFIER_PROMPT_VERSION
-from yt_searchapi.records import RunStatus
-from yt_searchapi.settings import (
+from yt_crawl.crawler import CrawlSummary
+from yt_crawl.llm_runtime import StructuredOutputError
+from yt_crawl.prompts import CLASSIFIER_PROMPT_VERSION
+from yt_crawl.records import RunStatus
+from yt_crawl.settings import (
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
 )
-from yt_searchapi.start_settings_ui import collect_missing_start_settings
-from yt_searchapi.state import (
+from yt_crawl.start_settings_ui import collect_missing_start_settings
+from yt_crawl.state import (
     BudgetState,
     CrawlProjectState,
+    PageProgress,
     ProjectStateStore,
     validate_resumable_classifier_prompt,
 )
@@ -137,7 +140,7 @@ def test_checkpoint_replace_failure_preserves_previous_state(
     def fail_replace(_source, _destination) -> None:
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("yt_searchapi.state.os.replace", fail_replace)
+    monkeypatch.setattr("yt_crawl.state.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated replace failure"):
         ProjectStateStore(project).save(updated)
@@ -157,18 +160,19 @@ def test_help_does_not_require_credentials_or_make_queries() -> None:
 def test_readme_documents_every_cli_option() -> None:
     readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
     root = get_command(app)
-    documented_options = {
+    cli_options = {
         option
         for command in root.commands.values()
         for parameter in command.params
         for option in (*parameter.opts, *parameter.secondary_opts)
         if option.startswith("--")
     }
+    readme_options = set(re.findall(r"`(--[a-z][a-z0-9-]*)(?:\s[^`]*)?`", readme))
 
-    missing = sorted(
-        option for option in documented_options if f"`{option}" not in readme
-    )
+    missing = sorted(option for option in cli_options if f"`{option}" not in readme)
+    extra = sorted(readme_options - cli_options)
     assert missing == []
+    assert extra == []
 
 
 def test_legacy_missing_prompt_version_is_rejected_before_credentials(
@@ -348,6 +352,42 @@ def test_expanded_transcript_reserve_preserves_transferred_capacity() -> None:
     )
 
     assert _expanded_transcript_reserve(budget, 8) == 4
+
+
+def test_resized_transcript_reserve_can_shrink_unused_capacity() -> None:
+    budget = SearchApiCreditBudget.restore(
+        {
+            "max_credits": 70,
+            "transcript_capacity": 20,
+            "discovery_spent": 10,
+            "transcript_spent": 10,
+            "pending": [],
+            "completed_video_ids": ["video-1"],
+        }
+    )
+
+    assert _resized_transcript_reserve(budget, 20) == 10
+    assert _resized_transcript_reserve(budget, 120) == 44
+
+
+def test_resized_transcript_reserve_moves_stranded_remaining_to_discovery() -> None:
+    budget = SearchApiCreditBudget.restore(
+        {
+            "max_credits": 104_004,
+            "transcript_capacity": 34_668,
+            "discovery_spent": 69_336,
+            "transcript_spent": 27_734,
+            "pending": [],
+            "completed_video_ids": ["video-1"],
+        }
+    )
+
+    reserve = _resized_transcript_reserve(budget, 104_004)
+    snapshot = budget.snapshot()
+    discovery_remaining = 104_004 - reserve - snapshot.discovery_spent
+
+    assert reserve == 30_046
+    assert discovery_remaining == 4_622
 
 
 def test_openai_client_has_bounded_timeout_and_three_sdk_retries(
@@ -832,6 +872,48 @@ def test_budget_stop_next_command_adds_credits_when_total_is_exhausted(
     assert "--add-credits 6" in command
 
 
+def test_budget_stop_next_command_rebalances_stranded_transcript_credits(
+    tmp_path,
+) -> None:
+    summary = CrawlSummary(
+        status=RunStatus.STOPPED_BUDGET,
+        stop_reason="discovery requires 1 credits but only 0 remain",
+        videos_discovered=2,
+        videos_evaluated=1,
+        relevant_videos=1,
+        transcripts_collected=1,
+        channels_expanded=0,
+        queries_executed=1,
+        pending_videos=1,
+    )
+    budget = SearchApiCreditBudget.restore(
+        {
+            "max_credits": 10,
+            "transcript_capacity": 6,
+            "discovery_spent": 4,
+            "transcript_spent": 1,
+            "pending": [],
+            "completed_video_ids": ["video-1"],
+        }
+    )
+
+    command = _suggested_next_command(
+        summary,
+        tmp_path / "stranded",
+        budget.snapshot(),
+        controls={
+            "max_depth": 1,
+            "max_queries": 3,
+            "max_search_pages": 1,
+            "max_channel_pages": 1,
+        },
+    )
+
+    assert command is not None
+    assert "--set-credits 5" in command
+    assert "--add-credits" not in command
+
+
 @pytest.mark.parametrize("width", [80, 120])
 def test_final_summary_shows_logfire_control_at_common_widths(
     monkeypatch, tmp_path, width
@@ -1030,7 +1112,7 @@ def test_completed_next_command_returns_none_when_every_scope_is_at_its_limit(
             "max_depth": 5,
             "max_queries": 18,
             "max_search_pages": 10,
-            "max_channel_pages": 10,
+            "max_channel_pages": 100,
         },
     )
 
@@ -1058,6 +1140,50 @@ def test_completed_project_rejects_credits_only_before_funding(
     assert "credits alone do not widen crawl" in result.stderr
     assert ProjectStateStore(project).load().budget.max_credits == 4
     assert not (project / "run_config.jsonl").exists()
+
+
+def test_show_prints_saved_screen_without_running(monkeypatch, tmp_path) -> None:
+    project = tmp_path / "complete-show"
+    state = _checkpoint(project, status="completed").model_copy(
+        update={
+            "stop_reason": "frontier_exhausted",
+            "discovered_videos": {"video-1": {"depth": 0}},
+            "evaluated_video_ids": ["video-1"],
+            "relevant_ids": ["video-1"],
+            "transcript_ids": ["video-1"],
+            "discovered_channels": {"channel-1": {"channel_id": "channel-1"}},
+            "channel_progress": {
+                "channel-1": PageProgress(pages_completed=1, exhausted=True)
+            },
+        }
+    )
+    ProjectStateStore(project).save(state)
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("show must not contact providers or mutate the project")
+
+    monkeypatch.setattr(cli, "_credentials", fail)
+    monkeypatch.setattr(cli, "_preflight_funding", fail)
+    monkeypatch.setattr(cli, "_commit_resume_state", fail)
+
+    result = CliRunner().invoke(app, ["resume", "--project", str(project), "--show"])
+
+    assert result.exit_code == 0
+    assert "SHOW PROJECT" in result.stdout
+    assert "SNAPSHOT" in result.stdout
+    assert "RUNNING" not in result.stdout
+    assert "Project session" not in result.stdout
+    assert "Stop reason" not in result.stdout
+    assert "frontier_exhausted" not in result.stdout
+    assert "Expand scope" not in result.stdout
+    assert "yt-crawl resume" not in result.stdout
+    assert "Relevant videos" in result.stdout
+    assert "1" in result.stdout
+    assert "Frontier" in result.stdout
+    assert "channel pages 1" in result.stdout
+    assert "1 exhausted" in result.stdout
+    assert not (project / "run_config.jsonl").exists()
+    assert ProjectStateStore(project).load().budget.max_credits == 4
 
 
 def test_completed_project_can_move_start_date_earlier_and_reopen_candidates(
@@ -1268,6 +1394,144 @@ def test_resume_funding_excludes_pending_reservations(monkeypatch, tmp_path) -> 
     assert result.exit_code == 2
     assert allowances == [7]
     assert not (project / "crawler.log").exists()
+
+
+def _spent_checkpoint(project: Path) -> CrawlProjectState:
+    state = _checkpoint(project).model_copy(deep=True)
+    state.budget = BudgetState(
+        max_credits=70,
+        transcript_capacity=20,
+        discovery_spent=10,
+        transcript_spent=10,
+        completed_video_ids=["video-1"],
+    )
+    ProjectStateStore(project).save(state)
+    return state
+
+
+def test_resume_rejects_set_credits_with_add_credits(tmp_path, monkeypatch) -> None:
+    project = tmp_path / "set-and-add"
+    _spent_checkpoint(project)
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("conflicting credit flags must fail before funding")
+
+    monkeypatch.setattr(cli, "_credentials", fail)
+    monkeypatch.setattr(cli, "_preflight_funding", fail)
+    result = CliRunner().invoke(
+        app,
+        [
+            "resume",
+            "--project",
+            str(project),
+            "--add-credits",
+            "5",
+            "--set-credits",
+            "0",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "either --set-credits or --add-credits" in result.stderr
+    assert ProjectStateStore(project).load().budget.max_credits == 70
+
+
+def test_resume_set_credits_overwrites_remaining_after_funding(
+    monkeypatch, tmp_path
+) -> None:
+    project = tmp_path / "set-credits"
+    _spent_checkpoint(project)
+    allowances = []
+    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+
+    def capture_allowance(_api_key, allowance, *_runtime):
+        allowances.append(allowance)
+        return 100
+
+    monkeypatch.setattr(cli, "_preflight_funding", capture_allowance)
+    monkeypatch.setattr(
+        cli,
+        "_openai_client",
+        lambda _api_key: (_ for _ in ()).throw(RuntimeError("stop after commit")),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["resume", "--project", str(project), "--set-credits", "0"],
+    )
+
+    assert result.exit_code == 1
+    assert allowances == [0]
+    committed = SearchApiCreditBudget.restore(
+        ProjectStateStore(project).load().budget.model_dump()
+    ).snapshot()
+    assert committed.max_credits == 20
+    assert committed.total_remaining == 0
+    assert committed.discovery_spent == 10
+    assert committed.transcript_spent == 10
+    audit = (project / "run_config.jsonl").read_text(encoding="utf-8")
+    assert '"max_searchapi_credits":20' in audit
+    assert '"credits_added":0' in audit
+
+
+def test_resume_set_credits_can_raise_remaining_after_funding(
+    monkeypatch, tmp_path
+) -> None:
+    project = tmp_path / "set-credits-up"
+    _spent_checkpoint(project)
+    allowances = []
+    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+
+    def capture_allowance(_api_key, allowance, *_runtime):
+        allowances.append(allowance)
+        return 100
+
+    monkeypatch.setattr(cli, "_preflight_funding", capture_allowance)
+    monkeypatch.setattr(
+        cli,
+        "_openai_client",
+        lambda _api_key: (_ for _ in ()).throw(RuntimeError("stop after commit")),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["resume", "--project", str(project), "--set-credits", "100"],
+    )
+
+    assert result.exit_code == 1
+    assert allowances == [100]
+    committed = SearchApiCreditBudget.restore(
+        ProjectStateStore(project).load().budget.model_dump()
+    ).snapshot()
+    assert committed.max_credits == 120
+    assert committed.total_remaining == 100
+    assert committed.discovery_spent == 10
+    assert committed.transcript_spent == 10
+    assert committed.discovery_remaining == 66
+    assert committed.transcript_remaining == 34
+
+
+def test_underfunded_set_credits_does_not_commit(monkeypatch, tmp_path) -> None:
+    project = tmp_path / "set-credits-underfunded"
+    _spent_checkpoint(project)
+    monkeypatch.setattr(cli, "_credentials", lambda: ("search-key", "openai-key"))
+
+    def reject(_api_key, allowance, *_runtime):
+        raise cli.typer.BadParameter(f"account is underfunded for {allowance} credits")
+
+    monkeypatch.setattr(cli, "_preflight_funding", reject)
+    result = CliRunner().invoke(
+        app,
+        ["resume", "--project", str(project), "--set-credits", "100"],
+    )
+
+    assert result.exit_code == 2
+    assert "underfunded for 100 credits" in result.stderr
+    saved = ProjectStateStore(project).load()
+    assert saved.budget.max_credits == 70
+    assert saved.budget.discovery_spent == 10
+    assert saved.budget.transcript_spent == 10
+    assert not (project / "run_config.jsonl").exists()
 
 
 @pytest.mark.parametrize(("credits_added", "expected_grant"), [(0, 4), (4, 8)])
@@ -1488,6 +1752,23 @@ def test_plan_summaries_are_compact_and_show_only_resume_changes(tmp_path) -> No
             },
         )
         == "Resume plan · grant +0 → 4 · frontier unchanged"
+    )
+    assert (
+        cli._resume_plan_summary(
+            credits_added=0,
+            new_grant=20,
+            previous_state=state,
+            controls={
+                "max_depth": 0,
+                "max_queries": 2,
+                "max_search_pages": 1,
+                "max_channel_pages": 1,
+            },
+            remaining=0,
+            previous_remaining=50,
+            previous_grant=70,
+        )
+        == "Resume plan · remaining 50 → 0 · grant 70 → 20 · frontier unchanged"
     )
     assert cli._resume_plan_summary(
         credits_added=0,

@@ -14,37 +14,37 @@ from uuid import uuid4
 from loguru import logger
 from pydantic import BaseModel
 
-from yt_searchapi.budget import (
+from yt_crawl.budget import (
     BudgetExceededError,
     SearchApiCreditBudget,
     TranscriptCreditReservation,
 )
-from yt_searchapi.classifier import (
+from yt_crawl.classifier import (
     ClassificationJob,
     RelevanceClassifier,
     RelevanceDecision,
     VideoCandidate,
     compact_relevance_decision,
 )
-from yt_searchapi.client import (
+from yt_crawl.client import (
     SearchApiClient,
     SearchApiError,
     is_retryable_searchapi_error,
 )
-from yt_searchapi.dates import (
+from yt_crawl.dates import (
     is_on_or_after_start_date,
     parse_publication_date,
     select_transcript_name,
 )
-from yt_searchapi.llm_runtime import AuditedOpenAIClient
-from yt_searchapi.models import youtube_video
-from yt_searchapi.prompts import (
+from yt_crawl.llm_runtime import AuditedOpenAIClient
+from yt_crawl.models import youtube_video
+from yt_crawl.prompts import (
     CLASSIFIER_PROMPT_VERSION,
     CompiledClassifierPrompt,
     LlmUsage,
     TopicExpansion,
 )
-from yt_searchapi.records import (
+from yt_crawl.records import (
     ApiCallRecord,
     BudgetAction,
     BudgetEventRecord,
@@ -66,18 +66,18 @@ from yt_searchapi.records import (
     TranscriptSegment,
     VideoCandidateRecord,
 )
-from yt_searchapi.runtime_events import (
+from yt_crawl.runtime_events import (
     CrawlProgressCallback,
     CrawlProgressSnapshot,
     RuntimeEvent,
     RuntimeEventCallback,
 )
-from yt_searchapi.settings import (
+from yt_crawl.settings import (
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
 )
-from yt_searchapi.state import (
+from yt_crawl.state import (
     BudgetState,
     CrawlProjectState,
     PageProgress,
@@ -85,7 +85,7 @@ from yt_searchapi.state import (
     validate_pending_transcript_decisions,
     validate_resumable_classifier_prompt,
 )
-from yt_searchapi.storage import JsonlRunWriter
+from yt_crawl.storage import JsonlRunWriter
 
 ProgressCallback = Callable[[str, str], None]
 
@@ -2360,9 +2360,12 @@ class ResearchCrawler:
             or progress.pages_completed >= self.config.max_search_pages
             for progress in self._query_progress.values()
         )
-        channels_done = sum(
-            progress.exhausted
-            or progress.pages_completed >= self.config.max_channel_pages
+        channels_exhausted = sum(
+            progress.exhausted for progress in self._channel_progress.values()
+        )
+        channels_page_capped = sum(
+            not progress.exhausted
+            and progress.pages_completed >= self.config.max_channel_pages
             for progress in self._channel_progress.values()
         )
         snapshot = CrawlProgressSnapshot(
@@ -2374,8 +2377,10 @@ class ResearchCrawler:
             queries_done=min(queries_done, queries_planned),
             queries_started=min(queries_started, queries_planned),
             queries_planned=queries_planned,
-            channels_done=channels_done,
+            channels_done=channels_exhausted + channels_page_capped,
             channels_discovered=len(self._discovered_channels),
+            channels_exhausted=channels_exhausted,
+            channels_page_capped=channels_page_capped,
         )
         try:
             self.on_crawl_progress(snapshot)

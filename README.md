@@ -1,4 +1,4 @@
-# yt-searchapi
+# yt-crawl
 
 A YouTube research crawler using [SearchAPI](https://www.searchapi.io/docs/youtube) and OpenAI. It finds videos for a topic, keeps those that match the research scope, and saves their target-language transcripts and an append-only audit trail.
 
@@ -6,12 +6,18 @@ A YouTube research crawler using [SearchAPI](https://www.searchapi.io/docs/youtu
 
 This is research code accompanying the related article: link. It is AI-generated and will not be maintained.
 
+## SearchAPI
+
+YouTube data comes from [SearchAPI](https://www.searchapi.io/docs/youtube). [Create an account](https://www.searchapi.io/), then put `SEARCHAPI_API_KEY` in `.env`.
+
+Pydantic response models are generated from the OpenAPI specs in `openapi/` with `scripts/generate_models.sh`. Rerun it only when those specs or the codegen flags change.
+
 ## Run the crawler
 
 Python 3.13 and [uv](https://docs.astral.sh/uv/) are required.
 
 ```bash
-uv sync --all-groups
+uv sync
 cp .env.example .env
 ```
 
@@ -21,7 +27,7 @@ Add `SEARCHAPI_API_KEY` and `OPENAI_API_KEY` to `.env`, then start a project:
 uv run yt-crawl start
 ```
 
-The terminal asks for the topic, language, publication-date boundary, budget, project folder, and crawl limits. It also asks a few questions to define which videos count as relevant. The crawler then shows live progress and writes the project data to the folder you chose.
+The terminal asks for the topic, language, publication-date boundary, budget, project folder, and crawl limits. It also asks a few questions to define which videos count as relevant. The crawler then shows live progress and writes the project data.
 
 To run without the settings prompts, pass the required values yourself:
 
@@ -30,7 +36,7 @@ uv run yt-crawl start \
   --topic "personal finance" \
   --language de \
   --start-date 2024-01-01 \
-  --max-credits 12 \
+  --max-credits 50 \
   --project runs/personal-finance-de
 ```
 
@@ -47,9 +53,13 @@ uv run yt-crawl resume \
   --max-search-pages 2
 ```
 
-`--add-credits` adds to the project's lifetime SearchAPI allowance; it does not replace it. To find more material after a completed run, also widen at least one scope limit (`--max-queries`, `--max-search-pages`, `--max-channel-pages`, or `--max-depth`) or move `--start-date` earlier. These scope limits can only increase on resume.
+```bash
+uv run yt-crawl resume \
+  --project runs/personal-finance-de \
+  --set-credits 100
+```
 
-Use `--add-credits 0` when unspent project credits remain. Before a session starts, the CLI checks that the SearchAPI account balance can cover its remaining possible requests.
+To find more material after a completed run, widen at least one scope limit or move `--start-date` earlier. Scope limits can only increase on resume. Before a session starts, the CLI checks that the SearchAPI account balance can cover its remaining possible requests.
 
 ## What you get
 
@@ -66,15 +76,44 @@ Each project is self-contained and resumable. Its main files are:
 
 All session records append to these files.
 
-## Common controls
+## CLI options
 
-`--max-credits` is the hard SearchAPI budget for a new project. Search-result pages, channel pages, video details, and transcripts can all consume credits. OpenAI usage is recorded in the audit but has no local budget cap.
+### start
 
-`--language` is the required video and transcript language. `--start-date` is the inclusive earliest publication date. `--country` and `--interface-language` control SearchAPI's YouTube context.
+| Option | Description |
+| --- | --- |
+| `--topic` | Research topic or question. |
+| `--project` | Project folder. Must be new or empty. |
+| `--max-credits` | Hard SearchAPI grant for a new project (minimum 4). Search pages, channel pages, video details, and transcripts consume credits. OpenAI usage is audited but not capped. |
+| `--language` | Required video and transcript language, for example `en` or `de`. |
+| `--start-date` | Inclusive earliest publication date (`YYYY-MM-DD`). |
+| `--max-depth` | Related/channel graph depth (0–5). |
+| `--max-queries` | Maximum query variants (2–18). |
+| `--max-search-pages` | Pages fetched per planned search query (1–10). |
+| `--max-channel-pages` | Pages fetched per discovered channel. |
+| `--country` | SearchAPI YouTube `gl` code. |
+| `--interface-language` | SearchAPI YouTube `hl` code. This is not the content-language gate. |
+| `--searchapi-timeout` | Per-request SearchAPI timeout in seconds. |
+| `--searchapi-retries` | Extra budgeted attempts for transient SearchAPI failures. Every dispatched attempt is audited and charged. |
+| `--searchapi-workers` | Maximum concurrent SearchAPI requests. Controls speed, not crawl scope. |
+| `--llm-workers` | Maximum concurrent OpenAI classification requests. Controls speed, not crawl scope. |
 
-`--searchapi-workers` and `--llm-workers` control speed, not crawl scope. `--searchapi-retries` controls additional attempts for transient SearchAPI failures; every dispatched attempt is audited and charged.
+### resume
 
-For the full option reference, use:
+| Option | Description |
+| --- | --- |
+| `--project` | Existing project folder. |
+| `--add-credits` | Add N credits to the lifetime grant. Use `0` to reuse unspent remaining. Cannot be combined with `--set-credits`. |
+| `--set-credits` | Overwrite remaining credits and split them across discovery and transcripts. Cannot be combined with `--add-credits`. |
+| `--show` | Print the saved dashboard and session summary without contacting providers or changing the project. |
+| `--start-date` | Inclusive earliest publication date (`YYYY-MM-DD`). May only move this date earlier. |
+| `--max-depth` | Related/channel graph depth (0–5). May only increase it. |
+| `--max-queries` | Maximum query variants (2–18). May only increase it. |
+| `--max-search-pages` | Pages fetched per planned search query (1–10). May only increase it. |
+| `--max-channel-pages` | Pages fetched per discovered channel. May only increase it. |
+| `--searchapi-retries` | Extra budgeted attempts for transient SearchAPI failures. Every dispatched attempt is audited and charged. |
+| `--searchapi-workers` | Maximum concurrent SearchAPI requests. Controls speed, not crawl scope. |
+| `--llm-workers` | Maximum concurrent OpenAI classification requests. Controls speed, not crawl scope. |
 
 ```bash
 uv run yt-crawl start --help
@@ -83,7 +122,7 @@ uv run yt-crawl resume --help
 
 ## Logfire telemetry
 
-Local JSONL auditing is always on. `LOGFIRE_TOKEN` optionally enables remote Logfire telemetry; set `YT_SEARCHAPI_DISABLE_TELEMETRY=1` to disable it explicitly.
+Local JSONL auditing is always on. `LOGFIRE_TOKEN` optionally enables remote Logfire telemetry; set `YT_CRAWL_DISABLE_TELEMETRY=1` to disable it explicitly.
 
 ## Development checks
 

@@ -1235,7 +1235,7 @@ wheels = [
 ]
 
 [[package]]
-name = "yt-searchapi"
+name = "yt-crawl"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

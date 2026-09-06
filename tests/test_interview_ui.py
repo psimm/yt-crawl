@@ -9,11 +9,11 @@ import pytest
 import typer
 from rich.console import Console
 
-import yt_searchapi.cli as cli
-import yt_searchapi.interview_ui as interview_ui
-from yt_searchapi.cli import _record_confirmed_interview
-from yt_searchapi.interview import InterviewSuggestions, SuggestedExample
-from yt_searchapi.interview_ui import (
+import yt_crawl.cli as cli
+import yt_crawl.interview_ui as interview_ui
+from yt_crawl.cli import _record_confirmed_interview
+from yt_crawl.interview import InterviewSuggestions, SuggestedExample
+from yt_crawl.interview_ui import (
     INTERVIEW_CANCELLED_MESSAGE,
     CheckboxAnswer,
     ConfirmedInterview,
@@ -23,7 +23,7 @@ from yt_searchapi.interview_ui import (
     PromptChoice,
     TerminalInterview,
 )
-from yt_searchapi.storage import JsonlRunWriter
+from yt_crawl.storage import JsonlRunWriter
 
 
 class FakePrompts:

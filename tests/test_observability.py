@@ -6,7 +6,7 @@ import pytest
 from loguru import logger
 from rich.style import Style
 
-from yt_searchapi import observability
+from yt_crawl import observability
 
 
 class _RecordingHandler(logging.Handler):
@@ -47,7 +47,7 @@ def test_configure_uses_official_logfire_bridge_and_required_options(
     handler = _RecordingHandler()
 
     monkeypatch.setattr(observability, "_configured", False)
-    monkeypatch.delenv("YT_SEARCHAPI_DISABLE_TELEMETRY", raising=False)
+    monkeypatch.delenv("YT_CRAWL_DISABLE_TELEMETRY", raising=False)
     monkeypatch.setattr(
         observability.logfire,
         "configure",
@@ -71,7 +71,7 @@ def test_configure_uses_official_logfire_bridge_and_required_options(
         {
             "send_to_logfire": "if-token-present",
             "console": False,
-            "service_name": "yt-searchapi",
+            "service_name": "yt-crawl",
         }
     ]
     assert bridge_calls == [True]
@@ -105,7 +105,7 @@ def test_unreachable_configuration_is_nonfatal_and_has_no_terminal_sink(
 def test_test_disable_switch_prevents_export(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(observability, "_configured", False)
-    monkeypatch.setenv("YT_SEARCHAPI_DISABLE_TELEMETRY", "1")
+    monkeypatch.setenv("YT_CRAWL_DISABLE_TELEMETRY", "1")
     monkeypatch.setattr(
         observability.logfire,
         "configure",
@@ -161,7 +161,7 @@ def test_manual_session_span_contains_only_intended_metadata(monkeypatch) -> Non
         session.set_outcome("completed", "frontier exhausted")
 
     template, sent = calls[0]
-    assert template == "yt-searchapi {action} session"
+    assert template == "yt-crawl {action} session"
     assert sent["run_id"] == "run-17"
     assert sent["action"] == "resume"
     assert sent["planned_credits"] == 12

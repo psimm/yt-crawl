@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import TypeAlias
 
-from yt_searchapi.interview_ui import InquirerPrompts, InterviewPrompts
+from yt_crawl.interview_ui import InquirerPrompts, InterviewPrompts
 
 SettingValue = str | int | float | Path
 SettingParser: TypeAlias = Callable[[str], SettingValue]
@@ -206,9 +206,8 @@ BASE_START_SETTING_QUESTIONS: tuple[StartSettingQuestion, ...] = (
     integer_setting(
         "max_channel_pages",
         "How many pages may be fetched per discovered channel?",
-        "Choose between 1 and 10.",
+        "Choose at least 1.",
         minimum=1,
-        maximum=10,
         default=1,
     ),
     text_setting(

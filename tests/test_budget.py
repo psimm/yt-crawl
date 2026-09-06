@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from yt_searchapi.budget import (
+from yt_crawl.budget import (
     BudgetExceededError,
     ImmediateTranscriptRequiredError,
     SearchApiCreditBudget,
@@ -274,6 +274,60 @@ def test_searchapi_budget_restore_and_expand_preserves_spending() -> None:
     assert snapshot.transcript_spent == 1
     assert snapshot.discovery_remaining == 4
     assert snapshot.transcript_remaining == 2
+
+
+def test_resize_overwrites_remaining_without_reopening_spent_credits() -> None:
+    budget = SearchApiCreditBudget(max_credits=70, transcript_reserve_credits=20)
+    budget.spend_discovery(10)
+    reservation = budget.mark_relevant("video-1", transcript_credits=10)
+    budget.reconcile_transcript(reservation)
+
+    budget.resize(max_credits=20, transcript_reserve_credits=10)
+    zeroed = budget.snapshot()
+    assert zeroed.total_remaining == 0
+    assert zeroed.discovery_spent == 10
+    assert zeroed.transcript_spent == 10
+    assert zeroed.discovery_capacity == 10
+    assert zeroed.transcript_capacity == 10
+
+    budget.resize(max_credits=120, transcript_reserve_credits=40)
+    expanded = budget.snapshot()
+    assert expanded.total_remaining == 100
+    assert expanded.discovery_spent == 10
+    assert expanded.transcript_spent == 10
+    assert expanded.max_credits == 120
+
+
+def test_resize_cannot_go_below_spent_or_reserved_credits() -> None:
+    budget = SearchApiCreditBudget(max_credits=12, transcript_reserve_credits=4)
+    budget.spend_discovery(3)
+    budget.mark_relevant("video-1", transcript_credits=2)
+
+    with pytest.raises(ValueError, match="already spent or reserved"):
+        budget.resize(max_credits=5, transcript_reserve_credits=1)
+    with pytest.raises(ValueError, match="already spent"):
+        budget.resize(max_credits=6, transcript_reserve_credits=4)
+    rejected = budget.snapshot()
+    assert rejected.max_credits == 12
+    assert rejected.transcript_reserved == 2
+
+
+def test_restore_accepts_a_zero_remaining_overwrite() -> None:
+    restored = SearchApiCreditBudget.restore(
+        {
+            "max_credits": 0,
+            "transcript_capacity": 0,
+            "discovery_spent": 0,
+            "transcript_spent": 0,
+            "pending": [],
+            "completed_video_ids": [],
+        }
+    )
+    snapshot = restored.snapshot()
+    assert snapshot.max_credits == 0
+    assert snapshot.total_remaining == 0
+    assert snapshot.discovery_capacity == 0
+    assert snapshot.transcript_capacity == 0
 
 
 @pytest.mark.parametrize(

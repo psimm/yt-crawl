@@ -42,6 +42,8 @@ class CrawlProgressSnapshot:
     queries_planned: int = 0
     channels_done: int = 0
     channels_discovered: int = 0
+    channels_exhausted: int = 0
+    channels_page_capped: int = 0
 
 
 RuntimeEventCallback = Callable[[RuntimeEvent], None]

@@ -1,4 +1,4 @@
-from yt_searchapi.cli import app
+from yt_crawl.cli import app
 
 if __name__ == "__main__":
     app()

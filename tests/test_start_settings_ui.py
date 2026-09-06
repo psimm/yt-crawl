@@ -3,13 +3,13 @@ from __future__ import annotations
 from collections import deque
 from pathlib import Path
 
-from yt_searchapi.interview_ui import PromptChoice
-from yt_searchapi.settings import (
+from yt_crawl.interview_ui import PromptChoice
+from yt_crawl.settings import (
     DEFAULT_LLM_WORKERS,
     DEFAULT_SEARCHAPI_RETRIES,
     DEFAULT_SEARCHAPI_WORKERS,
 )
-from yt_searchapi.start_settings_ui import (
+from yt_crawl.start_settings_ui import (
     BASE_START_SETTING_QUESTIONS,
     collect_missing_start_settings,
     float_setting,

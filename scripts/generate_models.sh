@@ -12,13 +12,13 @@ engines=(
   youtube_channel_videos
 )
 
-mkdir -p src/yt_searchapi/models
+mkdir -p src/yt_crawl/models
 
 for engine in "${engines[@]}"; do
   uv run datamodel-codegen \
     --input "openapi/${engine}.yaml" \
     --input-file-type openapi \
-    --output "src/yt_searchapi/models/${engine}.py" \
+    --output "src/yt_crawl/models/${engine}.py" \
     --output-model-type pydantic_v2.BaseModel \
     --target-python-version 3.13 \
     --use-standard-collections \

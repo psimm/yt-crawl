@@ -14,9 +14,9 @@ from typing import Any, Iterator, Literal
 
 from loguru import logger
 
-from yt_searchapi.records import ApiCallRecord
-from yt_searchapi.runtime_events import RuntimeEvent, RuntimeEventCallback
-from yt_searchapi.storage import JsonlRunWriter
+from yt_crawl.records import ApiCallRecord
+from yt_crawl.runtime_events import RuntimeEvent, RuntimeEventCallback
+from yt_crawl.storage import JsonlRunWriter
 
 GPT56_LUNA_MODEL = "gpt-5.6-luna"
 _TOKENS_PER_MILLION = Decimal(1_000_000)
@@ -90,7 +90,7 @@ class AuditedOpenAIClient:
         self._client = client
         self._writer = writer
         self._context: ContextVar[LlmCallContext | None] = ContextVar(
-            f"yt_searchapi_llm_context_{id(self)}",
+            f"yt_crawl_llm_context_{id(self)}",
             default=None,
         )
         self._request_slots = BoundedSemaphore(max_concurrency)

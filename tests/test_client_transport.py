@@ -6,12 +6,12 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from yt_searchapi.client import (
+from yt_crawl.client import (
     SearchApiClient,
     SearchApiError,
     is_retryable_searchapi_error,
 )
-from yt_searchapi.settings import DEFAULT_SEARCHAPI_WORKERS
+from yt_crawl.settings import DEFAULT_SEARCHAPI_WORKERS
 
 
 def test_transcript_request_uses_exact_language_without_fallback() -> None:

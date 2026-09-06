@@ -13,20 +13,20 @@ import httpx
 import pytest
 from openai import OpenAI
 
-from yt_searchapi import observability
-from yt_searchapi.classifier import (
+from yt_crawl import observability
+from yt_crawl.classifier import (
     RelevanceClassifier,
     RelevanceDecision,
     VideoCandidate,
 )
-from yt_searchapi.llm_runtime import (
+from yt_crawl.llm_runtime import (
     AuditedOpenAIClient,
     LlmTokenMetrics,
     StructuredOutputError,
     estimate_gpt56_luna_standard_cost,
 )
-from yt_searchapi.prompts import CompiledClassifierPrompt, TopicExpansion
-from yt_searchapi.storage import JsonlRunWriter
+from yt_crawl.prompts import CompiledClassifierPrompt, TopicExpansion
+from yt_crawl.storage import JsonlRunWriter
 
 VALID_EXPANSION = {
     "topic_interpretation": "Practical heat-pump retrofits.",
@@ -876,7 +876,7 @@ def test_audited_client_rejects_invalid_concurrency(tmp_path) -> None:
 
 
 def test_application_never_supplies_an_openai_output_cap() -> None:
-    source_root = Path(__file__).parents[1] / "src" / "yt_searchapi"
+    source_root = Path(__file__).parents[1] / "src" / "yt_crawl"
     offenders = [
         path
         for path in source_root.rglob("*.py")

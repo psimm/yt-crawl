@@ -1,5 +1,5 @@
 [project]
-name = "yt-searchapi"
+name = "yt-crawl"
 version = "0.1.0"
 description = "Budget-safe SearchAPI crawler for auditable YouTube topic research"
 readme = "README.md"
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-yt-crawl = "yt_searchapi.cli:app"
+yt-crawl = "yt_crawl.cli:app"
 
 [dependency-groups]
 dev = [
@@ -34,7 +34,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/yt_searchapi"]
+packages = ["src/yt_crawl"]
 
 [tool.ruff]
 target-version = "py313"
@@ -44,7 +44,7 @@ src = ["src"]
 select = ["E", "F", "I"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/yt_searchapi/models/*.py" = ["E501"]
+"src/yt_crawl/models/*.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

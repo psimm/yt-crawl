@@ -11,7 +11,7 @@ from typing import Any, Literal, Protocol, Sequence
 
 from pydantic import Field
 
-from yt_searchapi.prompts import (
+from yt_crawl.prompts import (
     DEFAULT_LLM_MODEL,
     CompiledClassifierPrompt,
     LlmCallResult,

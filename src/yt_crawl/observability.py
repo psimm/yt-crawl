@@ -16,12 +16,12 @@ from rich.text import Text
 
 LOGFIRE_URL = "https://logfire.pydantic.dev/"
 _WARNING_LOGGER = logging.getLogger("py.warnings")
-_APP_LOGGER = logging.getLogger("yt_searchapi")
+_APP_LOGGER = logging.getLogger("yt_crawl")
 _quiet_warning_handler = logging.NullHandler()
 _quiet_app_handler = logging.NullHandler()
 _logfire_warning_handler: logging.Handler | None = None
 _configured = False
-_OPENAI_INSTRUMENTED_ATTR = "_yt_searchapi_logfire_instrumented"
+_OPENAI_INSTRUMENTED_ATTR = "_yt_crawl_logfire_instrumented"
 
 
 def _quiet_terminal_logging() -> None:
@@ -55,13 +55,13 @@ def configure_observability() -> bool:
     try:
         send_to_logfire: bool | str = (
             False
-            if os.getenv("YT_SEARCHAPI_DISABLE_TELEMETRY") == "1"
+            if os.getenv("YT_CRAWL_DISABLE_TELEMETRY") == "1"
             else "if-token-present"
         )
         logfire.configure(
             send_to_logfire=send_to_logfire,
             console=False,
-            service_name="yt-searchapi",
+            service_name="yt-crawl",
         )
         logger.add(
             logfire.loguru_handler(),
@@ -152,7 +152,7 @@ class RunSessionSpan(AbstractContextManager["RunSessionSpan"]):
         attributes.update(controls or {})
         try:
             self._span = logfire.span(
-                "yt-searchapi {action} session",
+                "yt-crawl {action} session",
                 **attributes,
             )
             self._span.__enter__()
