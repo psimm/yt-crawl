@@ -36,7 +36,7 @@ from yt_crawl.dates import (
     parse_publication_date,
     select_transcript_name,
 )
-from yt_crawl.llm_runtime import AuditedOpenAIClient
+from yt_crawl.llm_runtime import LoggedOpenAIClient
 from yt_crawl.models import youtube_video
 from yt_crawl.prompts import (
     CLASSIFIER_PROMPT_VERSION,
@@ -222,7 +222,7 @@ class ResearchCrawler:
         classifier_prompt: CompiledClassifierPrompt,
         searchapi: SearchApiClient,
         classifier: RelevanceClassifier,
-        llm_client: AuditedOpenAIClient,
+        llm_client: LoggedOpenAIClient,
         search_budget: SearchApiCreditBudget,
         writer: JsonlRunWriter,
         on_progress: ProgressCallback | None = None,

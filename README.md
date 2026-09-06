@@ -122,7 +122,7 @@ uv run yt-crawl resume --help
 
 ## Logfire telemetry
 
-Local JSONL auditing is always on. `LOGFIRE_TOKEN` optionally enables remote Logfire telemetry; set `YT_CRAWL_DISABLE_TELEMETRY=1` to disable it explicitly.
+Local JSONL auditing is always on. `LOGFIRE_TOKEN` optionally enables remote [Logfire](https://logfire.pydantic.dev/) telemetry; set `YT_CRAWL_DISABLE_TELEMETRY=1` to disable it explicitly.
 
 ## Development checks
 

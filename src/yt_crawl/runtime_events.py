@@ -20,11 +20,6 @@ class RuntimeEvent:
     phase: RuntimeEventPhase
     status: RuntimeEventStatus | None = None
     cache_hit: bool = False
-    input_tokens: int = 0
-    cached_input_tokens: int = 0
-    cache_write_tokens: int = 0
-    output_tokens: int = 0
-    estimated_cost_usd: float | None = None
     error: str | None = None
 
 

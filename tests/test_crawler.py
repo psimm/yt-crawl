@@ -1233,6 +1233,9 @@ def test_dashboard_caps_queued_searchapi_batch_at_provider_limit(tmp_path) -> No
             thread = threading.Thread(target=run_crawler, daemon=True)
             thread.start()
             assert details_started.wait(timeout=2)
+            deadline = time.monotonic() + 2
+            while transport_peak < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
             console.print(dashboard.render())
             rendered = console_output.getvalue()
             assert "SearchAPI 2/2 · 2 queued" in rendered

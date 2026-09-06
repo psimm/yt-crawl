@@ -45,6 +45,12 @@ from yt_crawl.state import (
 CLASSIFY_PROMPT_SHA256 = (
     "4d553b0b48b4bb151321bd8aa5d9904477ecfdbec8dea4f2554cef83409c8ae6"
 )
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(result) -> str:
+    text = _ANSI_ESCAPE.sub("", f"{result.stdout}{result.stderr}")
+    return " ".join(text.replace("│", "").split())
 
 
 class _RecordingSessionSpan:
@@ -192,7 +198,7 @@ def test_legacy_missing_prompt_version_is_rejected_before_credentials(
     result = CliRunner().invoke(app, ["resume", "--project", str(project)])
 
     assert result.exit_code == 2
-    message = " ".join((result.stdout + result.stderr).replace("│", "").split())
+    message = _plain(result)
     assert "uses classifier prompt version 'relevance-v1'" in message
     assert "Migrate the checkpoint" in message
 
@@ -214,7 +220,7 @@ def test_prompt_hash_mismatch_is_rejected_before_credentials(
     result = CliRunner().invoke(app, ["resume", "--project", str(project)])
 
     assert result.exit_code == 2
-    message = " ".join((result.stdout + result.stderr).replace("│", "").split())
+    message = _plain(result)
     assert "prompt hash does not match" in message
 
 
@@ -457,7 +463,7 @@ def test_blank_topic_fails_before_settings_or_clients(monkeypatch, tmp_path) -> 
     )
 
     assert result.exit_code == 2
-    assert "topic must not be blank" in result.stderr
+    assert "topic must not be blank" in _plain(result)
 
 
 def test_missing_credentials_fails_before_provider_clients(
@@ -639,10 +645,11 @@ def test_start_explains_recovery_when_preparation_has_no_checkpoint(
     )
 
     assert result.exit_code == 2
-    assert "No valid resumable checkpoint is available" in result.stderr
-    assert "Research preparation may not have finished" in result.stderr
-    assert "start --project <new-path>" in result.stderr
-    assert "yt-crawl resume" not in result.stderr
+    message = _plain(result)
+    assert "No valid resumable checkpoint is available" in message
+    assert "Research preparation may not have finished" in message
+    assert "start --project <new-path>" in message
+    assert "yt-crawl resume" not in message
 
 
 def test_resume_missing_checkpoint_uses_same_recovery_guidance(tmp_path) -> None:
@@ -652,8 +659,9 @@ def test_resume_missing_checkpoint_uses_same_recovery_guidance(tmp_path) -> None
     result = CliRunner().invoke(app, ["resume", "--project", str(project)])
 
     assert result.exit_code == 2
-    assert "No valid resumable checkpoint is available" in result.stderr
-    assert "start --project <new-path>" in result.stderr
+    message = _plain(result)
+    assert "No valid resumable checkpoint is available" in message
+    assert "start --project <new-path>" in message
     assert list(project.iterdir()) == []
     cli._require_new_project(project)
 
@@ -703,7 +711,7 @@ def test_resume_rejects_later_start_date_before_credentials(
     )
 
     assert result.exit_code == 2
-    message = " ".join(result.stderr.replace("│", "").split())
+    message = _plain(result)
     assert "cannot move later from 2026-01-01 to 2026-02-01" in message
     assert ProjectStateStore(project).load().start_date == date(2026, 1, 1)
     assert not (project / "run_config.jsonl").exists()
@@ -1358,7 +1366,7 @@ def test_completed_project_rejects_max_queries_beyond_prepared_plan_before_fundi
     )
 
     assert result.exit_code == 2
-    error = " ".join(result.stderr.split()).casefold()
+    error = _plain(result).casefold()
     assert "prepared" in error
     assert "plan has only 3 variants" in error
     assert "increasing --max-queries" in error
@@ -1432,7 +1440,7 @@ def test_resume_rejects_set_credits_with_add_credits(tmp_path, monkeypatch) -> N
     )
 
     assert result.exit_code == 2
-    assert "either --set-credits or --add-credits" in result.stderr
+    assert "either --set-credits or --add-credits" in _plain(result)
     assert ProjectStateStore(project).load().budget.max_credits == 70
 
 

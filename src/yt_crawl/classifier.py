@@ -164,9 +164,9 @@ class RelevanceClassifier:
     ) -> tuple[LlmCallResult[RelevanceDecision] | Exception, ...]:
         """Classify independent jobs in order with a bounded worker pool.
 
-        Audited clients receive one context per worker so concurrent calls keep
+        Logged clients receive one context per worker so concurrent calls keep
         their operation and local audit rows isolated. Plain injected test clients
-        remain supported without requiring the auditing facade.
+        remain supported without requiring the logging facade.
         """
 
         if max_workers < 1:

@@ -72,10 +72,6 @@ def _saved_project(tmp_path):
             provider="openai",
             operation="topic expansion",
             status="success",
-            llm_input_tokens=1_200,
-            llm_cached_input_tokens=400,
-            llm_cache_write_tokens=200,
-            llm_output_tokens=300,
             llm_model="gpt-5.6-luna",
         )
     )
@@ -120,12 +116,6 @@ def test_api_totals_are_cumulative(tmp_path) -> None:
 
     totals = load_api_totals(project)
 
-    assert totals.llm_input_tokens == 1_200
-    assert totals.llm_cached_input_tokens == 400
-    assert totals.llm_cache_write_tokens == 200
-    assert totals.llm_output_tokens == 300
-    assert totals.llm_total_tokens == 1_500
-    assert totals.llm_estimated_cost_usd == pytest.approx(0.000538)
     assert totals.llm_calls == 1
     assert totals.searchapi_calls == 2
     assert totals.cache_hits == 1
@@ -166,12 +156,7 @@ def test_resume_dashboard_recovers_metrics_and_renders_at_common_widths(
     assert "queries 3" in text
     assert "search pages 2" in text
     assert "channel pages 1" in text
-    assert "input 1,200" in text
-    assert "cached 400" in text
-    assert "writes 200" in text
-    assert "output 300" in text
-    assert "tokens 1,500" in text
-    assert "Standard cost $0.000538" in text
+    assert "LLM  calls 1" in text
     assert "SearchAPI 0/1" in text
     assert "OpenAI 0/1" in text
     assert "cache hits 1" in text
@@ -201,10 +186,7 @@ def test_runtime_rows_stay_intact_at_common_and_wide_widths(tmp_path, width) -> 
 
     text = _render(dashboard, width)
 
-    assert (
-        "LLM tokens  input 1,200  |  cached 400  |  writes 200  |  output 300" in text
-    )
-    assert "LLM total  tokens 1,500  |  calls 1  |  Standard cost $0.000538" in text
+    assert "LLM  calls 1" in text
     assert "Requests  SearchAPI 0/1  |  OpenAI 0/1  |  total 0" in text
     assert "Audit  SearchAPI cache hits 1  |  errors 1" in text
 
@@ -347,11 +329,6 @@ def test_completed_events_update_api_totals_without_rescanning_audit(tmp_path) -
             operation="classify",
             phase="finished",
             status="success",
-            input_tokens=1_000,
-            cached_input_tokens=400,
-            cache_write_tokens=100,
-            output_tokens=200,
-            estimated_cost_usd=0.0004,
         )
     )
     dashboard.on_event(
@@ -366,13 +343,7 @@ def test_completed_events_update_api_totals_without_rescanning_audit(tmp_path) -
 
     text = _render(dashboard, 120)
 
-    assert "input 1,000" in text
-    assert "cached 400" in text
-    assert "writes 100" in text
-    assert "output 200" in text
-    assert "tokens 1,200" in text
-    assert "calls 1" in text
-    assert "Standard cost $0.000400" in text
+    assert "LLM  calls 1" in text
     assert "cache hits 1" in text
 
 

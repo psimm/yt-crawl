@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from yt_crawl.records import (
+    ApiCallRecord,
     BudgetAction,
     BudgetEventRecord,
     BudgetKind,
@@ -109,6 +110,26 @@ def test_legacy_llm_budget_records_remain_readable_but_are_not_rewritten() -> No
     parsed_event = validate_run_record(legacy_event.model_dump(mode="json"))
     assert isinstance(parsed_event, BudgetEventRecord)
     assert parsed_event.budget_kind is BudgetKind.LEGACY_LLM_TOKENS
+
+    call_payload = ApiCallRecord(
+        run_id="run-001",
+        provider="openai",
+        operation="expand_topic_queries",
+        status="success",
+    ).model_dump(mode="json")
+    call_payload["llm_estimated_cost_usd"] = 0.0000584
+    call_payload["llm_input_tokens"] = 120
+    call_payload["llm_cached_input_tokens"] = 20
+    call_payload["llm_cache_write_tokens"] = 40
+    call_payload["llm_output_tokens"] = 30
+    parsed_call = validate_run_record(call_payload)
+    assert isinstance(parsed_call, ApiCallRecord)
+    dumped = parsed_call.model_dump()
+    assert "llm_estimated_cost_usd" not in dumped
+    assert "llm_input_tokens" not in dumped
+    assert "llm_cached_input_tokens" not in dumped
+    assert "llm_cache_write_tokens" not in dumped
+    assert "llm_output_tokens" not in dumped
 
 
 def test_writer_appends_without_overwriting_and_splits_record_types(tmp_path) -> None:

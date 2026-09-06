@@ -32,7 +32,7 @@ from yt_crawl.interview_ui import (
     InterviewCancelled,
     TerminalInterview,
 )
-from yt_crawl.llm_runtime import AuditedOpenAIClient, StructuredOutputError
+from yt_crawl.llm_runtime import LoggedOpenAIClient, StructuredOutputError
 from yt_crawl.observability import (
     RunSessionSpan,
     configure_observability,
@@ -348,7 +348,7 @@ def start(
     try:
         # Transient SDK retries stay inside one audited logical OpenAI call.
         openai_client = _openai_client(openai_key)
-        audited_openai = AuditedOpenAIClient(
+        logged_openai = LoggedOpenAIClient(
             openai_client,
             writer,
             on_event=dashboard.on_event,
@@ -357,7 +357,7 @@ def start(
         preparation_started = True
         expansion, classifier_prompt, confirmed = _prepare_research(
             writer=writer,
-            client=audited_openai,
+            client=logged_openai,
             topic=topic,
             language_hint=language_value,
             start_date_hint=start_date_value,
@@ -409,8 +409,8 @@ def start(
                 expansion=expansion,
                 classifier_prompt=classifier_prompt,
                 searchapi=searchapi,
-                classifier=RelevanceClassifier(audited_openai),
-                llm_client=audited_openai,
+                classifier=RelevanceClassifier(logged_openai),
+                llm_client=logged_openai,
                 search_budget=search_budget,
                 writer=writer,
                 on_progress=dashboard.update,
@@ -800,7 +800,7 @@ def resume(
         )
         failure_stage = "resume_provider_setup"
         openai_client = _openai_client(openai_key)
-        audited_openai = AuditedOpenAIClient(
+        logged_openai = LoggedOpenAIClient(
             openai_client,
             writer,
             on_event=dashboard.on_event,
@@ -839,8 +839,8 @@ def resume(
                 expansion=expansion,
                 classifier_prompt=classifier_prompt,
                 searchapi=searchapi,
-                classifier=RelevanceClassifier(audited_openai),
-                llm_client=audited_openai,
+                classifier=RelevanceClassifier(logged_openai),
+                llm_client=logged_openai,
                 search_budget=budget,
                 writer=writer,
                 on_progress=dashboard.update,
@@ -901,7 +901,7 @@ def resume(
 def _prepare_research(
     *,
     writer: JsonlRunWriter,
-    client: AuditedOpenAIClient,
+    client: LoggedOpenAIClient,
     topic: str,
     language_hint: str,
     start_date_hint: str,

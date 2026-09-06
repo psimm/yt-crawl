@@ -20,10 +20,8 @@ from yt_crawl.classifier import (
     VideoCandidate,
 )
 from yt_crawl.llm_runtime import (
-    AuditedOpenAIClient,
-    LlmTokenMetrics,
+    LoggedOpenAIClient,
     StructuredOutputError,
-    estimate_gpt56_luna_standard_cost,
 )
 from yt_crawl.prompts import CompiledClassifierPrompt, TopicExpansion
 from yt_crawl.storage import JsonlRunWriter
@@ -101,7 +99,7 @@ def _openai_client(handler, *, max_retries: int = 0) -> OpenAI:
 def _audited_client(tmp_path: Path, handler, *, on_event=None, max_retries: int = 0):
     writer = JsonlRunWriter(tmp_path, "run-audited")
     inner = _openai_client(handler, max_retries=max_retries)
-    return AuditedOpenAIClient(inner, writer, on_event=on_event), writer, inner
+    return LoggedOpenAIClient(inner, writer, on_event=on_event), writer, inner
 
 
 def _audit_rows(writer: JsonlRunWriter) -> list[dict[str, Any]]:
@@ -113,7 +111,7 @@ def _audit_rows(writer: JsonlRunWriter) -> list[dict[str, Any]]:
     ]
 
 
-def _parse_expansion(client: AuditedOpenAIClient):
+def _parse_expansion(client: LoggedOpenAIClient):
     with client.call_context("discovery", "expand_topic_queries"):
         return client.responses.parse(
             model="gpt-5.6-luna",
@@ -145,18 +143,15 @@ def test_valid_completed_response_is_parsed_and_audited_once(tmp_path) -> None:
     assert "max_output_tokens" not in request_bodies[0]
     assert [event.phase for event in events] == ["started", "finished"]
     assert events[-1].status == "success"
-    assert (events[-1].input_tokens, events[-1].output_tokens) == (120, 30)
-    assert events[-1].cached_input_tokens == 20
-    assert events[-1].cache_write_tokens == 40
-    assert events[-1].estimated_cost_usd == pytest.approx(0.0000584)
     (audit,) = _audit_rows(writer)
     assert audit["request_id"] == "resp_test"
     assert audit["status"] == "success"
-    assert (audit["llm_input_tokens"], audit["llm_output_tokens"]) == (120, 30)
-    assert audit["llm_cached_input_tokens"] == 20
-    assert audit["llm_cache_write_tokens"] == 40
     assert audit["llm_model"] == "gpt-5.6-luna"
-    assert audit["llm_estimated_cost_usd"] == pytest.approx(0.0000584)
+    assert "llm_input_tokens" not in audit
+    assert "llm_cached_input_tokens" not in audit
+    assert "llm_cache_write_tokens" not in audit
+    assert "llm_output_tokens" not in audit
+    assert "llm_estimated_cost_usd" not in audit
     assert audit["error"] is None
 
 
@@ -267,7 +262,6 @@ def test_logfire_instrumented_sdk_response_is_warning_clean_and_audited_once(
     (audit,) = _audit_rows(writer)
     assert audit["request_id"] == "resp_instrumented"
     assert audit["status"] == "success"
-    assert (audit["llm_input_tokens"], audit["llm_output_tokens"]) == (120, 30)
 
 
 def test_only_known_logfire_pydantic_serializer_warning_is_suppressed(
@@ -303,7 +297,7 @@ def test_only_known_logfire_pydantic_serializer_warning_is_suppressed(
             return WarningRawResponse()
 
     writer = JsonlRunWriter(tmp_path, "run-warning")
-    client = AuditedOpenAIClient(
+    client = LoggedOpenAIClient(
         SimpleNamespace(responses=WarningResponses()),
         writer,
     )
@@ -353,7 +347,7 @@ def test_unrelated_or_changed_warnings_remain_visible(
             raise RuntimeError("warning did not become an error")
 
     writer = JsonlRunWriter(tmp_path, f"run-visible-{module.replace('.', '-')}")
-    client = AuditedOpenAIClient(
+    client = LoggedOpenAIClient(
         SimpleNamespace(responses=VisibleWarningResponses()),
         writer,
     )
@@ -390,7 +384,7 @@ def test_new_style_raw_json_is_used_without_text_property(tmp_path) -> None:
             return JsonRawResponse()
 
     writer = JsonlRunWriter(tmp_path, "run-new-style")
-    client = AuditedOpenAIClient(SimpleNamespace(responses=RawResponses()), writer)
+    client = LoggedOpenAIClient(SimpleNamespace(responses=RawResponses()), writer)
 
     response = _parse_expansion(client)
 
@@ -398,7 +392,6 @@ def test_new_style_raw_json_is_used_without_text_property(tmp_path) -> None:
     (audit,) = _audit_rows(writer)
     assert audit["status"] == "success"
     assert audit["request_id"] == "resp_new_style"
-    assert (audit["llm_input_tokens"], audit["llm_output_tokens"]) == (120, 30)
 
 
 def test_unreadable_raw_json_is_sanitized_and_audited_once(tmp_path) -> None:
@@ -423,7 +416,7 @@ def test_unreadable_raw_json_is_sanitized_and_audited_once(tmp_path) -> None:
             return UnreadableRawResponse()
 
     writer = JsonlRunWriter(tmp_path, "run-unreadable")
-    client = AuditedOpenAIClient(
+    client = LoggedOpenAIClient(
         SimpleNamespace(responses=RawResponses()),
         writer,
         on_event=events.append,
@@ -489,11 +482,9 @@ def test_truncated_incomplete_response_is_cleanly_rejected_and_audited(
     assert "EOF" not in message
     assert [event.phase for event in events] == ["started", "finished"]
     assert events[-1].status == "error"
-    assert (events[-1].input_tokens, events[-1].output_tokens) == (410, 900)
     (audit,) = _audit_rows(writer)
     assert audit["status"] == "error"
     assert audit["request_id"] == "resp_partial"
-    assert (audit["llm_input_tokens"], audit["llm_output_tokens"]) == (410, 900)
 
 
 @pytest.mark.parametrize(
@@ -630,11 +621,9 @@ def test_network_error_balances_events_and_records_zero_usage(tmp_path) -> None:
 
     assert [event.phase for event in events] == ["started", "finished"]
     assert events[-1].status == "error"
-    assert (events[-1].input_tokens, events[-1].output_tokens) == (0, 0)
     (audit,) = _audit_rows(writer)
     assert audit["status"] == "error"
     assert audit["request_id"] is None
-    assert (audit["llm_input_tokens"], audit["llm_output_tokens"]) == (0, 0)
 
 
 def test_timeout_balances_events_and_records_zero_usage(tmp_path) -> None:
@@ -652,11 +641,9 @@ def test_timeout_balances_events_and_records_zero_usage(tmp_path) -> None:
 
     assert [event.phase for event in events] == ["started", "finished"]
     assert events[-1].status == "error"
-    assert (events[-1].input_tokens, events[-1].output_tokens) == (0, 0)
     (audit,) = _audit_rows(writer)
     assert audit["status"] == "error"
     assert audit["request_id"] is None
-    assert (audit["llm_input_tokens"], audit["llm_output_tokens"]) == (0, 0)
 
 
 def test_transient_network_failure_succeeds_within_one_audited_call(tmp_path) -> None:
@@ -800,7 +787,7 @@ def test_concurrent_call_contexts_are_isolated_and_provider_calls_are_bounded(
                     active -= 1
 
     writer = JsonlRunWriter(tmp_path, "run-concurrent")
-    client = AuditedOpenAIClient(
+    client = LoggedOpenAIClient(
         SimpleNamespace(responses=ConcurrentResponses()),
         writer,
         max_concurrency=2,
@@ -835,40 +822,9 @@ def test_concurrent_call_contexts_are_isolated_and_provider_calls_are_bounded(
     }
 
 
-def test_luna_standard_cost_uses_cache_read_write_and_context_tiers() -> None:
-    short = estimate_gpt56_luna_standard_cost(
-        LlmTokenMetrics(
-            input_tokens=120,
-            cached_input_tokens=20,
-            cache_write_tokens=40,
-            output_tokens=30,
-        ),
-        model="gpt-5.6-luna",
-    )
-    long = estimate_gpt56_luna_standard_cost(
-        LlmTokenMetrics(
-            input_tokens=300_000,
-            cached_input_tokens=100_000,
-            cache_write_tokens=50_000,
-            output_tokens=1_000,
-        ),
-        model="gpt-5.6-luna",
-    )
-
-    assert short == pytest.approx(0.0000584)
-    assert long == pytest.approx(0.0908)
-    assert (
-        estimate_gpt56_luna_standard_cost(
-            LlmTokenMetrics(input_tokens=100),
-            model="gpt-5.6-terra",
-        )
-        is None
-    )
-
-
-def test_audited_client_rejects_invalid_concurrency(tmp_path) -> None:
+def test_logged_client_rejects_invalid_concurrency(tmp_path) -> None:
     with pytest.raises(ValueError, match="max_concurrency"):
-        AuditedOpenAIClient(
+        LoggedOpenAIClient(
             object(),
             JsonlRunWriter(tmp_path, "invalid"),
             max_concurrency=0,

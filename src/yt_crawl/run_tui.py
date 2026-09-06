@@ -18,11 +18,6 @@ from rich.table import Table
 from rich.text import Text
 
 from yt_crawl.budget import SearchApiCreditBudget
-from yt_crawl.llm_runtime import (
-    GPT56_LUNA_MODEL,
-    LlmTokenMetrics,
-    estimate_gpt56_luna_standard_cost,
-)
 from yt_crawl.observability import logfire_link
 from yt_crawl.runtime_events import CrawlProgressSnapshot, RuntimeEvent
 from yt_crawl.state import CrawlProjectState, ProjectStateStore
@@ -55,19 +50,10 @@ class FrontierSettings:
 class ApiTotals:
     """Cumulative provider totals recovered from the append-only audit."""
 
-    llm_input_tokens: int = 0
-    llm_cached_input_tokens: int = 0
-    llm_cache_write_tokens: int = 0
-    llm_output_tokens: int = 0
-    llm_estimated_cost_usd: float = 0.0
     llm_calls: int = 0
     searchapi_calls: int = 0
     cache_hits: int = 0
     errors: int = 0
-
-    @property
-    def llm_total_tokens(self) -> int:
-        return self.llm_input_tokens + self.llm_output_tokens
 
 
 def load_api_totals(project_dir: str | Path) -> ApiTotals:
@@ -76,8 +62,6 @@ def load_api_totals(project_dir: str | Path) -> ApiTotals:
     path = Path(project_dir) / "api_call.jsonl"
     if not path.is_file():
         return ApiTotals()
-    llm_input = llm_cached = llm_writes = llm_output = 0
-    llm_cost = 0.0
     llm_calls = searchapi_calls = cache_hits = errors = 0
     with path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -88,36 +72,11 @@ def load_api_totals(project_dir: str | Path) -> ApiTotals:
             status = row.get("status")
             if provider == "openai":
                 llm_calls += 1
-                input_tokens = int(row.get("llm_input_tokens", 0) or 0)
-                cached_tokens = int(row.get("llm_cached_input_tokens", 0) or 0)
-                write_tokens = int(row.get("llm_cache_write_tokens", 0) or 0)
-                output_tokens = int(row.get("llm_output_tokens", 0) or 0)
-                llm_input += input_tokens
-                llm_cached += cached_tokens
-                llm_writes += write_tokens
-                llm_output += output_tokens
-                recorded_cost = row.get("llm_estimated_cost_usd")
-                if recorded_cost is None:
-                    recorded_cost = estimate_gpt56_luna_standard_cost(
-                        LlmTokenMetrics(
-                            input_tokens=input_tokens,
-                            cached_input_tokens=cached_tokens,
-                            cache_write_tokens=write_tokens,
-                            output_tokens=output_tokens,
-                        ),
-                        model=str(row.get("llm_model") or GPT56_LUNA_MODEL),
-                    )
-                llm_cost += float(recorded_cost or 0)
             elif provider == "searchapi":
                 searchapi_calls += 1
                 cache_hits += int(status == "cache_hit")
             errors += int(status == "error")
     return ApiTotals(
-        llm_input_tokens=llm_input,
-        llm_cached_input_tokens=llm_cached,
-        llm_cache_write_tokens=llm_writes,
-        llm_output_tokens=llm_output,
-        llm_estimated_cost_usd=llm_cost,
         llm_calls=llm_calls,
         searchapi_calls=searchapi_calls,
         cache_hits=cache_hits,
@@ -133,16 +92,6 @@ def _updated_api_totals(totals: ApiTotals, event: RuntimeEvent) -> ApiTotals:
     is_openai = event.provider == "openai"
     is_searchapi = event.provider == "searchapi"
     return ApiTotals(
-        llm_input_tokens=totals.llm_input_tokens
-        + (event.input_tokens if is_openai else 0),
-        llm_cached_input_tokens=totals.llm_cached_input_tokens
-        + (event.cached_input_tokens if is_openai else 0),
-        llm_cache_write_tokens=totals.llm_cache_write_tokens
-        + (event.cache_write_tokens if is_openai else 0),
-        llm_output_tokens=totals.llm_output_tokens
-        + (event.output_tokens if is_openai else 0),
-        llm_estimated_cost_usd=totals.llm_estimated_cost_usd
-        + (float(event.estimated_cost_usd or 0.0) if is_openai else 0.0),
         llm_calls=totals.llm_calls + int(is_openai),
         searchapi_calls=totals.searchapi_calls + int(is_searchapi),
         cache_hits=totals.cache_hits + int(is_searchapi and event.cache_hit),
@@ -432,14 +381,7 @@ class RunDashboard:
 
         usage = Table.grid(expand=True, padding=(0, 1))
         usage_rows = (
-            "LLM tokens  "
-            f"input {api.llm_input_tokens:,}  |  "
-            f"cached {api.llm_cached_input_tokens:,}  |  "
-            f"writes {api.llm_cache_write_tokens:,}  |  "
-            f"output {api.llm_output_tokens:,}",
-            "LLM total  "
-            f"tokens {api.llm_total_tokens:,}  |  calls {api.llm_calls:,}  |  "
-            f"Standard cost ${api.llm_estimated_cost_usd:.6f}",
+            f"LLM  calls {api.llm_calls:,}",
             "Requests  "
             f"SearchAPI {active_searchapi}/{self.searchapi_concurrency}"
             + (f" · {queued_searchapi} queued" if queued_searchapi else "")

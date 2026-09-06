@@ -1,4 +1,4 @@
-"""Audited OpenAI Responses wrapper used by crawler projects."""
+"""Logged OpenAI Responses wrapper used by crawler projects."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from decimal import Decimal
 from threading import BoundedSemaphore
 from typing import Any, Iterator, Literal
 
@@ -18,37 +17,11 @@ from yt_crawl.records import ApiCallRecord
 from yt_crawl.runtime_events import RuntimeEvent, RuntimeEventCallback
 from yt_crawl.storage import JsonlRunWriter
 
-GPT56_LUNA_MODEL = "gpt-5.6-luna"
-_TOKENS_PER_MILLION = Decimal(1_000_000)
-_LUNA_SHORT_CONTEXT_RATES = {
-    "input": Decimal("0.20"),
-    "cached_input": Decimal("0.02"),
-    "cache_write": Decimal("0.25"),
-    "output": Decimal("1.20"),
-}
-_LUNA_LONG_CONTEXT_RATES = {
-    "input": Decimal("0.40"),
-    "cached_input": Decimal("0.04"),
-    "cache_write": Decimal("0.50"),
-    "output": Decimal("1.80"),
-}
-_LONG_CONTEXT_THRESHOLD = 272_000
-
 
 @dataclass(frozen=True, slots=True)
 class LlmCallContext:
     pool: Literal["discovery", "transcript"]
     purpose: str
-
-
-@dataclass(frozen=True, slots=True)
-class LlmTokenMetrics:
-    """Provider-reported token categories used for audit and cost estimates."""
-
-    input_tokens: int = 0
-    cached_input_tokens: int = 0
-    cache_write_tokens: int = 0
-    output_tokens: int = 0
 
 
 class StructuredOutputError(RuntimeError):
@@ -70,12 +43,8 @@ class StructuredOutputError(RuntimeError):
         )
 
 
-class AuditedOpenAIClient:
-    """Small Responses facade with JSONL auditing and safe structured parsing.
-
-    SearchAPI credits are the only local hard budget. Provider-reported OpenAI
-    usage remains visible in the append-only API-call audit.
-    """
+class LoggedOpenAIClient:
+    """Responses facade with JSONL logging and safe structured parsing."""
 
     def __init__(
         self,
@@ -96,7 +65,7 @@ class AuditedOpenAIClient:
         self._request_slots = BoundedSemaphore(max_concurrency)
         self.max_concurrency = max_concurrency
         self._on_event = on_event or (lambda _event: None)
-        self.responses = _AuditedResponses(self)
+        self.responses = _LoggedResponses(self)
 
     def _emit_event(self, event: RuntimeEvent) -> None:
         try:
@@ -126,8 +95,8 @@ class AuditedOpenAIClient:
             self._context.reset(token)
 
 
-class _AuditedResponses:
-    def __init__(self, owner: AuditedOpenAIClient) -> None:
+class _LoggedResponses:
+    def __init__(self, owner: LoggedOpenAIClient) -> None:
         self._owner = owner
 
     def parse(self, **kwargs: Any) -> Any:
@@ -160,14 +129,11 @@ class _AuditedResponses:
                 raw = self._owner._client.responses.with_raw_response.parse(**kwargs)
         except Exception as exc:
             envelope = _exception_envelope(exc)
-            response_id = _response_id(envelope, getattr(exc, "request_id", None))
-            usage = _usage_tokens(envelope)
             self._finish(
                 context,
                 started=started,
                 status="error",
-                response_id=response_id,
-                usage=usage,
+                response_id=_response_id(envelope, getattr(exc, "request_id", None)),
                 model=_response_model(envelope, kwargs.get("model")),
                 error=_request_error_reason(exc),
             )
@@ -175,7 +141,6 @@ class _AuditedResponses:
 
         envelope = _raw_envelope(raw)
         response_id = _response_id(envelope, getattr(raw, "request_id", None))
-        usage = _usage_tokens(envelope)
         model = _response_model(envelope, kwargs.get("model"))
 
         problem = _envelope_problem(envelope)
@@ -190,7 +155,6 @@ class _AuditedResponses:
                 started=started,
                 status="error",
                 response_id=response_id,
-                usage=usage,
                 model=model,
                 error=str(error),
             )
@@ -209,7 +173,6 @@ class _AuditedResponses:
                 started=started,
                 status="error",
                 response_id=response_id,
-                usage=usage,
                 model=model,
                 error=str(error),
             )
@@ -226,7 +189,6 @@ class _AuditedResponses:
                 started=started,
                 status="error",
                 response_id=response_id,
-                usage=usage,
                 model=model,
                 error=str(error),
             )
@@ -237,7 +199,6 @@ class _AuditedResponses:
             started=started,
             status="success",
             response_id=response_id,
-            usage=usage,
             model=model,
             error=None,
         )
@@ -250,14 +211,9 @@ class _AuditedResponses:
         started: float,
         status: Literal["success", "error"],
         response_id: str | None,
-        usage: LlmTokenMetrics,
         model: str | None,
         error: str | None,
     ) -> None:
-        estimated_cost = estimate_gpt56_luna_standard_cost(
-            usage,
-            model=model,
-        )
         self._owner._writer.append(
             ApiCallRecord(
                 run_id=self._owner._writer.run_id,
@@ -265,12 +221,7 @@ class _AuditedResponses:
                 operation=context.purpose,
                 request_id=response_id,
                 status=status,
-                llm_input_tokens=usage.input_tokens,
-                llm_cached_input_tokens=usage.cached_input_tokens,
-                llm_cache_write_tokens=usage.cache_write_tokens,
-                llm_output_tokens=usage.output_tokens,
                 llm_model=model,
-                llm_estimated_cost_usd=estimated_cost,
                 latency_seconds=time.perf_counter() - started,
                 error=error,
             )
@@ -281,11 +232,6 @@ class _AuditedResponses:
                 operation=context.purpose,
                 phase="finished",
                 status=status,
-                input_tokens=usage.input_tokens,
-                cached_input_tokens=usage.cached_input_tokens,
-                cache_write_tokens=usage.cache_write_tokens,
-                output_tokens=usage.output_tokens,
-                estimated_cost_usd=estimated_cost,
                 error=error,
             )
         )
@@ -337,79 +283,12 @@ def _response_id(
     return request_id
 
 
-def _usage_tokens(envelope: Mapping[str, Any] | Any) -> LlmTokenMetrics:
-    if not isinstance(envelope, Mapping):
-        return LlmTokenMetrics()
-    usage = envelope.get("usage")
-    if not isinstance(usage, Mapping):
-        return LlmTokenMetrics()
-    input_tokens = _nonnegative_int(usage.get("input_tokens"))
-    details = usage.get("input_tokens_details")
-    cached_input_tokens = (
-        _nonnegative_int(details.get("cached_tokens"))
-        if isinstance(details, Mapping)
-        else 0
-    )
-    cached_input_tokens = min(cached_input_tokens, input_tokens)
-    cache_write_tokens = (
-        _nonnegative_int(details.get("cache_write_tokens"))
-        if isinstance(details, Mapping)
-        else 0
-    )
-    cache_write_tokens = min(cache_write_tokens, input_tokens - cached_input_tokens)
-    return LlmTokenMetrics(
-        input_tokens=input_tokens,
-        cached_input_tokens=cached_input_tokens,
-        cache_write_tokens=cache_write_tokens,
-        output_tokens=_nonnegative_int(usage.get("output_tokens")),
-    )
-
-
 def _response_model(envelope: Mapping[str, Any] | Any, requested: Any) -> str | None:
     if isinstance(envelope, Mapping):
         model = envelope.get("model")
         if isinstance(model, str) and model:
             return model
     return requested if isinstance(requested, str) and requested else None
-
-
-def estimate_gpt56_luna_standard_cost(
-    usage: LlmTokenMetrics,
-    *,
-    model: str | None = GPT56_LUNA_MODEL,
-) -> float | None:
-    """Estimate direct Standard-tier cost using the current Luna rate card.
-
-    Inputs above 272K use the full-request long-context rates published for
-    GPT-5.6 Luna. Regional-processing uplifts and non-Standard service tiers are
-    intentionally outside this estimate.
-    """
-
-    if model is None or not model.startswith(GPT56_LUNA_MODEL):
-        return None
-    rates = (
-        _LUNA_LONG_CONTEXT_RATES
-        if usage.input_tokens > _LONG_CONTEXT_THRESHOLD
-        else _LUNA_SHORT_CONTEXT_RATES
-    )
-    cached = min(usage.cached_input_tokens, usage.input_tokens)
-    writes = min(usage.cache_write_tokens, usage.input_tokens - cached)
-    uncached = usage.input_tokens - cached - writes
-    cost = (
-        Decimal(uncached) * rates["input"]
-        + Decimal(cached) * rates["cached_input"]
-        + Decimal(writes) * rates["cache_write"]
-        + Decimal(usage.output_tokens) * rates["output"]
-    ) / _TOKENS_PER_MILLION
-    return float(cost)
-
-
-def _nonnegative_int(value: Any) -> int:
-    try:
-        parsed = int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-    return max(parsed, 0)
 
 
 def _envelope_problem(envelope: Mapping[str, Any] | Any) -> str | None:
@@ -452,10 +331,7 @@ def _contains_refusal(output: Any) -> bool:
 
 
 __all__ = [
-    "GPT56_LUNA_MODEL",
-    "AuditedOpenAIClient",
+    "LoggedOpenAIClient",
     "LlmCallContext",
-    "LlmTokenMetrics",
     "StructuredOutputError",
-    "estimate_gpt56_luna_standard_cost",
 ]

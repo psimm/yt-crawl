@@ -323,12 +323,7 @@ class ApiCallRecord(RunRecordBase):
     request_id: str | None = None
     status: Literal["success", "error", "cache_hit", "not_sent"]
     searchapi_credits: int = Field(default=0, ge=0)
-    llm_input_tokens: int = Field(default=0, ge=0)
-    llm_cached_input_tokens: int = Field(default=0, ge=0)
-    llm_cache_write_tokens: int = Field(default=0, ge=0)
-    llm_output_tokens: int = Field(default=0, ge=0)
     llm_model: str | None = None
-    llm_estimated_cost_usd: float | None = Field(default=None, ge=0)
     latency_seconds: float | None = Field(default=None, ge=0)
     error: str | None = None
 
@@ -388,6 +383,16 @@ def validate_run_record(value: object) -> RunRecord:
         value = dict(value)
         value.pop("llm_discovery_tokens", None)
         value.pop("llm_transcript_tokens", None)
+    elif isinstance(value, Mapping) and value.get("record_type") == "api_call":
+        value = dict(value)
+        for retired in (
+            "llm_estimated_cost_usd",
+            "llm_input_tokens",
+            "llm_cached_input_tokens",
+            "llm_cache_write_tokens",
+            "llm_output_tokens",
+        ):
+            value.pop(retired, None)
     elif (
         isinstance(value, Mapping)
         and value.get("record_type") == "relevance_decision"
