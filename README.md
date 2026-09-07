@@ -4,7 +4,7 @@ A YouTube research crawler using [SearchAPI](https://www.searchapi.io/?utm_sourc
 
 ![Crawl steps](diagram.png)
 
-This is research code accompanying the related article: link. It is AI-generated and will not be maintained.
+This is research code accompanying the related article on [simmering.dev](https://simmering.dev/blog/finance-youtube-de/). The code is AI-generated and will not be maintained. Feel free to adapt it for your own projects.
 
 ## SearchAPI
 
